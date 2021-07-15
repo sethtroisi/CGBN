@@ -28,14 +28,14 @@ maxwell:
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_50 miller_rabin.cu -o mr -lgmp
 
 pascal:
-	nvcc $(INC) $(LIB) -I../../include -arch=sm_60 miller_rabin.cu -o mr -lgmp
+	nvcc $(INC) $(LIB) -I../../include -arch=sm_61 miller_rabin.cu -o mr -lgmp
 
-volta: 
+volta:
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_70 miller_rabin.cu -o mr -lgmp
 
-turing: 
+turing:
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_75 miller_rabin.cu -o mr -lgmp
 
-ampere: 
+ampere:
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_80 miller_rabin.cu -o mr -lgmp
 

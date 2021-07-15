@@ -28,7 +28,7 @@ maxwell:
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_50 add.cu -o add -lgmp
 
 pascal:
-	nvcc $(INC) $(LIB) -I../../include -arch=sm_60 add.cu -o add -lgmp
+	nvcc $(INC) $(LIB) -I../../include -arch=sm_61 add.cu -o add -lgmp
 
 volta: 
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_70 add.cu -o add -lgmp
