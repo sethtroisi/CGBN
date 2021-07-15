@@ -53,7 +53,7 @@ maxwell:
 	nvcc $(INC) $(LIB) -I../include -arch=sm_50 xmp_tester.cu -o xmp_tester -lgmp
 
 pascal:
-	nvcc $(INC) $(LIB) -I../include -arch=sm_60 xmp_tester.cu -o xmp_tester -lgmp
+	nvcc $(INC) $(LIB) -I../include -arch=sm_61 xmp_tester.cu -o xmp_tester -lgmp
 
 volta:
 	nvcc $(INC) $(LIB) -I../include -arch=sm_70 xmp_tester.cu -o xmp_tester -lgmp
