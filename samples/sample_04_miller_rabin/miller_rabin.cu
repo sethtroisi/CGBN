@@ -29,6 +29,9 @@ IN THE SOFTWARE.
 #include <gmp.h>
 #include "cgbn/cgbn.h"
 #include "../utility/support.h"
+#include "chrono"
+
+using namespace std;
 
 // For this example, there are quite a few template parameters that are used to generate the actual code.
 // In order to simplify passing many parameters, we use the same approach as the CGBN library, which is to
@@ -182,6 +185,7 @@ class miller_rabin_t {
     instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
     int         index;
 
+    /*
     mpz_t n;
     mpz_init(n);
     mpz_set_str(n,
@@ -193,11 +197,13 @@ class miller_rabin_t {
         "82fe06d1f66b2936f139f8c23019a304c9545d6a4e9dfb"
         "6ad477b7c1a5a7e67ac0c4605ba7a7539dd43f09b67c70"
         "4b88d30eb6b6257d65f695", 0);
+        */
 
     for(index=0;index<count;index++) {
-      //random_words(instances[index].candidate._limbs, params::BITS/32);
-      from_mpz(n, instances[index].candidate._limbs, params::BITS/32);
-      mpz_add_ui(n, n, 2);
+      //from_mpz(n, instances[index].candidate._limbs, params::BITS/32);
+      //mpz_add_ui(n, n, 2);
+
+      random_words(instances[index].candidate._limbs, params::BITS/32);
       instances[index].candidate._limbs[0] |= 1;
       instances[index].passed=0;
     }
@@ -275,7 +281,7 @@ uint32_t *generate_primes(uint32_t count) {
 }
 
 template<class params>
-void run_test(uint32_t instance_count, uint32_t prime_count) {
+void run_and_time_test(uint32_t instance_count, uint32_t prime_count) {
   typedef typename miller_rabin_t<params>::instance_t instance_t;
 
   instance_t          *instances, *gpuInstances;
@@ -288,8 +294,14 @@ void run_test(uint32_t instance_count, uint32_t prime_count) {
   primes=generate_primes(prime_count);
   instances=miller_rabin_t<params>::generate_instances(instance_count);
 
+  auto start_t = std::chrono::high_resolution_clock::now();
+
   printf("Copying primes and instances to the GPU ...\n");
   CUDA_CHECK(cudaSetDevice(0));
+
+  // Can lower host thread CPU usage from 100% to 0
+  CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceBlockingSync));
+
   CUDA_CHECK(cudaMalloc((void **)&gpuPrimes, sizeof(uint32_t)*prime_count));
   CUDA_CHECK(cudaMemcpy(gpuPrimes, primes, sizeof(uint32_t)*prime_count, cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMalloc((void **)&gpuInstances, sizeof(instance_t)*instance_count));
@@ -301,18 +313,29 @@ void run_test(uint32_t instance_count, uint32_t prime_count) {
   printf("Running GPU kernel ...\n");
 
   // launch kernel with blocks=ceil(instance_count/IPB) and threads=TPB
-  //kernel_miller_rabin<params><<<(instance_count+IPB-1)/IPB, TPB>>>(report, gpuInstances, instance_count, gpuPrimes, prime_count);
+  kernel_miller_rabin<params><<<(instance_count+IPB-1)/IPB, TPB>>>(report, gpuInstances, instance_count, gpuPrimes, prime_count);
+
+  printf("Waiting for Sync ...\n");
+
 
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
-  //CUDA_CHECK(cudaDeviceSynchronize());
-  //CGBN_CHECK(report);
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CGBN_CHECK(report);
 
   // copy the instances back from gpuMemory
   printf("Copying results back to CPU ...\n");
-  //CUDA_CHECK(cudaMemcpy(instances, gpuInstances, sizeof(instance_t)*instance_count, cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(instances, gpuInstances, sizeof(instance_t)*instance_count, cudaMemcpyDeviceToHost));
 
-  printf("Verifying the results ...\n");
+
+  auto end_t = std::chrono::high_resolution_clock::now();
+  double diff = std::chrono::duration<float>(end_t - start_t).count();
+  printf("Testing %d candidates (%d BITS) for %d rounds took %.4f = %.0f candidates/second\n",
+          instance_count, params::BITS, prime_count, diff, instance_count / diff);
+
+  printf("Verifying the results ...\n\n");
   //miller_rabin_t<params>::verify_results(instances, instance_count, primes, prime_count);
+
+
 
   // clean up
   free(primes);
@@ -324,10 +347,13 @@ void run_test(uint32_t instance_count, uint32_t prime_count) {
 
 
 #define INSTANCES 100000
-#define PRIMES 10
+#define PRIMES 1
 
 int main() {
-  typedef mr_params_t<8, 1536, 5> params;
+  typedef mr_params_t<8, 2048, 5> params;
 
-  run_test<params>(INSTANCES, PRIMES);
+  int RUNS = 10;
+  for (int i = 0; i < RUNS; i++) {
+    run_and_time_test<params>(INSTANCES, PRIMES);
+  }
 }
