@@ -25,11 +25,12 @@ IN THE SOFTWARE.
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "chrono"
+
 #include <cuda.h>
 #include <gmp.h>
 #include "cgbn/cgbn.h"
 #include "../utility/support.h"
-#include "chrono"
 
 using namespace std;
 

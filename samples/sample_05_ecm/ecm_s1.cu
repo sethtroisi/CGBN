@@ -22,9 +22,12 @@ IN THE SOFTWARE.
 
 ***/
 
+#include <cassert>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "chrono"
+
 #include <cuda.h>
 #include <gmp.h>
 #include "cgbn/cgbn.h"
@@ -73,6 +76,9 @@ class curve_t {
     cgbn_mem_t<params::BITS> bY;
     cgbn_mem_t<params::BITS> modulus;
     uint32_t d;
+
+    uint32_t num_bits;
+    char s_bits[100]; // TODO dynamically copy this
   } instance_t;
 
   typedef cgbn_context_t<params::TPI, params>   context_t;
@@ -114,11 +120,13 @@ class curve_t {
     cgbn_add(_env, C, bY, bX);
     cgbn_sub(_env, D, bY, bX);
 
+    // TODO remove this with do normalize or do mod or something.
+    cgbn_add(_env, D, D, modulus);
+
     cgbn_add(_env, A, aY, aX);
     cgbn_sub(_env, B, aY, aX);
 
-    // TODO remove this or do normalize or do mod or something.
-    // Needed to keep result of _sub positive
+    // TODO remove this with do normalize or do mod or something.
     cgbn_add(_env, B, B, modulus);
 
 /*
@@ -134,7 +142,6 @@ class curve_t {
     cgbn_mont_sqr(_env, AA, A, modulus, np0);
     cgbn_mont_sqr(_env, BB, B, modulus, np0);
 
-
 /*
     cgbn_set(_env, aX, A);
     cgbn_set(_env, aY, B);
@@ -145,6 +152,8 @@ class curve_t {
     // Overwrite aX with result
     cgbn_mont_mul(_env, aX, AA, BB, modulus, np0);
     cgbn_sub(_env, K, AA, BB);
+    // TODO remove this with do normalize or do mod or something.
+    cgbn_add(_env, K, K, modulus);
 
     cgbn_mul_ui32(_env, dK, K, d);
     cgbn_add(_env, temp, BB, dK);
@@ -154,11 +163,8 @@ class curve_t {
 
     cgbn_add(_env, w, DA, CB);
     cgbn_sub(_env, v, DA, CB);
-    // TODO remove this or do normalize or do mod or something.
-    // Needed to keep result of _sub positive
+    // TODO remove this with do normalize or do mod or something.
     cgbn_add(_env, v, v, modulus);
-
-
 
     // Overwrite bX
     cgbn_mont_sqr(_env, bX, w, modulus, np0);
@@ -191,6 +197,17 @@ class curve_t {
         from_mpz(x, instance.modulus._limbs, params::BITS/32);
 
         instance.d = 23; // d_z in colab
+
+
+        mpz_set_ui(x, 2520);
+        instance.num_bits = mpz_sizeinbase(x, 2) - 1;
+        assert( instance.num_bits <= 100 );
+        for (int i = 0; i < instance.num_bits; i++) {
+            instance.s_bits[i] = mpz_tstbit (x, instance.num_bits - 1 - i);
+            //printf("%d => %d\n", i, instance.s_bits[i]);
+        }
+
+        instance.num_bits = 144343;
     }
 
     mpz_clear(x);
@@ -205,31 +222,44 @@ class curve_t {
 
 template<class params>
 __global__ void kernel_double_add(cgbn_error_report_t *report, typename curve_t<params>::instance_t *instances, uint32_t count) {
-  int32_t instance;
+  int32_t instance_i;
+  //int32_t instance_j;
 
-  // decode an instance number from the blockIdx and threadIdx
-  instance=(blockIdx.x*blockDim.x + threadIdx.x)/params::TPI;
-  if(instance>=count)
+  // decode an instance_i number from the blockIdx and threadIdx
+  instance_i=(blockIdx.x*blockDim.x + threadIdx.x)/params::TPI;
+  //instance_j=(blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
+  if(instance_i >= count)
     return;
 
-  curve_t<params>                 curve(cgbn_report_monitor, report, instance);
+  curve_t<params>                 curve(cgbn_report_monitor, report, instance_i);
   typename curve_t<params>::bn_t  aX, aY, bX, bY, modulus;
+
+  typename curve_t<params>::instance_t &instance = instances[instance_i];
 
   // the loads and stores can go in the class, but it seems more natural to have them
   // here and to pass in and out bignums
-  cgbn_load(curve._env, aX, &(instances[instance].aX));
-  cgbn_load(curve._env, aY, &(instances[instance].aY));
-  cgbn_load(curve._env, bX, &(instances[instance].bX));
-  cgbn_load(curve._env, bY, &(instances[instance].bY));
-  cgbn_load(curve._env, modulus, &(instances[instance].modulus));
+  cgbn_load(curve._env, aX, &(instance.aX));
+  cgbn_load(curve._env, aY, &(instance.aY));
+  cgbn_load(curve._env, bX, &(instance.bX));
+  cgbn_load(curve._env, bY, &(instance.bY));
+  cgbn_load(curve._env, modulus, &(instance.modulus));
 
-  uint32_t d = instances[instance].d;
-  curve.double_add(aX, aY, bX, bY, d, modulus);
+  uint32_t d = instance.d;
 
-  cgbn_store(curve._env, &(instances[instance].aX), aX);
-  cgbn_store(curve._env, &(instances[instance].aY), aY);
-  cgbn_store(curve._env, &(instances[instance].bX), bX);
-  cgbn_store(curve._env, &(instances[instance].bY), bY);
+  // Do the progressive queue thing.
+  for (int b = 0; b < instance.num_bits; b++) {
+    //if (instance_j == 0) printf("%d => %d\n", b, instance.s_bits[b]);
+    if (instance.s_bits[b & 7] == 0) {
+        curve.double_add(aX, aY, bX, bY, d, modulus);
+    } else {
+        curve.double_add(bX, bY, aX, aY, d, modulus);
+    }
+  }
+
+  cgbn_store(curve._env, &(instance.aX), aX);
+  cgbn_store(curve._env, &(instance.aY), aY);
+  cgbn_store(curve._env, &(instance.bX), bX);
+  cgbn_store(curve._env, &(instance.bY), bY);
 }
 
 template<class params>
@@ -241,10 +271,12 @@ void run_test(uint32_t instance_count) {
   int32_t              TPB=(params::TPB==0) ? 128 : params::TPB;    // default threads per block to 128
   int32_t              TPI=params::TPI, IPB=TPB/TPI;                // IPB is instances per block
 
-  printf("Genereating instances ...\n");
+  size_t gpu_count = (instance_count+IPB-1)/IPB;
+
+  //printf("Genereating instances ...\n");
   instances = curve_t<params>::generate_instances(instance_count);
 
-  printf("Copying instances to the GPU ...\n");
+  //printf("Copying instances to the GPU ...\n");
   CUDA_CHECK(cudaSetDevice(0));
   CUDA_CHECK(cudaMalloc((void **)&gpuInstances, sizeof(instance_t)*instance_count));
   CUDA_CHECK(cudaMemcpy(gpuInstances, instances, sizeof(instance_t)*instance_count, cudaMemcpyHostToDevice));
@@ -252,18 +284,27 @@ void run_test(uint32_t instance_count) {
   // create a cgbn_error_report for CGBN to report back errors
   CUDA_CHECK(cgbn_error_report_alloc(&report));
 
-  printf("Running GPU kernel ...\n");
+  printf("Running GPU kernel<%ld> ...\n", gpu_count);
+
+  auto start_t = std::chrono::high_resolution_clock::now();
 
   // launch kernel with blocks=ceil(instance_count/IPB) and threads=TPB
-  kernel_double_add<params><<<(instance_count+IPB-1)/IPB, TPB>>>(report, gpuInstances, instance_count);
+  kernel_double_add<params><<<gpu_count, TPB>>>(report, gpuInstances, instance_count);
 
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
   CUDA_CHECK(cudaDeviceSynchronize());
   CGBN_CHECK(report);
 
   // copy the instances back from gpuMemory
-  printf("Copying results back to CPU ...\n");
+  //printf("Copying results back to CPU ...\n");
   CUDA_CHECK(cudaMemcpy(instances, gpuInstances, sizeof(instance_t)*instance_count, cudaMemcpyDeviceToHost));
+
+  auto end_t = std::chrono::high_resolution_clock::now();
+  double diff = std::chrono::duration<float>(end_t - start_t).count();
+  printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f = %.0f curves/second\n",
+      instance_count, params::BITS, instances[0].num_bits, diff,
+      instance_count / diff);
+
 
   mpz_t x, y;
   mpz_init(x);
@@ -273,10 +314,10 @@ void run_test(uint32_t instance_count) {
 
     to_mpz(x, instance.aX._limbs, params::BITS/32);
     to_mpz(y, instance.aY._limbs, params::BITS/32);
-    gmp_printf("pA: (%Zd, %Zd)\n", x, y);
+    //gmp_printf("pA: (%Zd, %Zd)\n", x, y);
     to_mpz(x, instance.bX._limbs, params::BITS/32);
     to_mpz(y, instance.bY._limbs, params::BITS/32);
-    gmp_printf("pB: (%Zd, %Zd)\n", x, y);
+    //gmp_printf("pB: (%Zd, %Zd)\n", x, y);
   }
   mpz_clear(x);
   mpz_clear(y);
@@ -290,5 +331,15 @@ void run_test(uint32_t instance_count) {
 int main() {
   typedef powm_params_t<8, 1024, 5> params;
 
-  run_test<params>(1);
+  run_test<params>(256);
+
+  run_test<params>(16 * 63);
+  run_test<params>(16 * 65);
+  run_test<params>(16 * 100);
+  run_test<params>(16 * 110);
+  run_test<params>(1790);
+  run_test<params>(1792);
+  run_test<params>(1794);
+  run_test<params>(2000);
+  run_test<params>(1780 * 2);
 }
