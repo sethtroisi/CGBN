@@ -179,7 +179,7 @@ class curve_t {
 
 
   // Verify 0 <= r < modulus
-  __device__ __forceinline__ void assert_normalized(env_t env, bn_t &r, const bn_t &modulus) {
+  __device__ __forceinline__ void assert_normalized(bn_t &r, const bn_t &modulus) {
     if (_context.check_errors()) {
 
         // Negative overflow
@@ -194,7 +194,7 @@ class curve_t {
   }
 
   // Normalize after addition
-  __device__ __forceinline__ void normalize_addition(env_t env, bn_t &r, const bn_t &modulus) {
+  __device__ __forceinline__ void normalize_addition(bn_t &r, const bn_t &modulus) {
 
       if (cgbn_compare(_env, r, modulus) >= 0) {
           cgbn_sub(_env, r, r, modulus);
@@ -246,6 +246,9 @@ class curve_t {
     uint32_t np0 = cgbn_bn2mont(_env, t, q, modulus);
     if (thread_i == 0) {
         printf("\tv2 %d,%d | np0 %d\n", _instance, bit, np0);
+        printf("\t\tin\t(%d, %d),  (%d, %d)\n",
+                cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
+                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
     }
 
     // Convert everything to mont
@@ -254,10 +257,10 @@ class curve_t {
     cgbn_bn2mont(_env, w, w, modulus);
     cgbn_bn2mont(_env, v, v, modulus);
     { // TODO: move behind a flag
-        assert_normalized(_env, q, modulus);
-        assert_normalized(_env, u, modulus);
-        assert_normalized(_env, w, modulus);
-        assert_normalized(_env, v, modulus);
+        assert_normalized(q, modulus);
+        assert_normalized(u, modulus);
+        assert_normalized(w, modulus);
+        assert_normalized(v, modulus);
         if (thread_i == 0)
             printf("\t\t0\t(%d, %d),  (%d, %d)\n",
                     cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
@@ -265,18 +268,18 @@ class curve_t {
     }
 
     cgbn_add(_env, t, v, w); // t = (bY + bX)
-    normalize_addition(_env, t, modulus);
+    normalize_addition(t, modulus);
     cgbn_sub(_env, v, v, w); // v = (bY - bX)
     normalize_subtraction(v, modulus);
     cgbn_add(_env, w, u, q); // w = (aY + aX)
-    normalize_addition(_env, w, modulus);
+    normalize_addition(w, modulus);
     cgbn_sub(_env, u, u, q); // u = (aY - aX)
     normalize_subtraction(u, modulus);
     {
-        assert_normalized(_env, t, modulus);
-        assert_normalized(_env, v, modulus);
-        assert_normalized(_env, w, modulus);
-        assert_normalized(_env, u, modulus);
+        assert_normalized(t, modulus);
+        assert_normalized(v, modulus);
+        assert_normalized(w, modulus);
+        assert_normalized(u, modulus);
         if (thread_i == 0)
             printf("\t\t1\t(%d, %d),  (%d, %d)\n",
                     cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
@@ -289,10 +292,10 @@ class curve_t {
     cgbn_mont_sqr(_env, w, w, modulus, np0);    // AA
     cgbn_mont_sqr(_env, u, u, modulus, np0);    // BB
     {
-        assert_normalized(_env, t, modulus);
-        assert_normalized(_env, v, modulus);
-        assert_normalized(_env, w, modulus);
-        assert_normalized(_env, u, modulus);
+        assert_normalized(t, modulus);
+        assert_normalized(v, modulus);
+        assert_normalized(w, modulus);
+        assert_normalized(u, modulus);
         if (thread_i == 0)
             printf("\t\t2\t(%d, %d),  (%d, %d)\n",
                     cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
@@ -301,9 +304,9 @@ class curve_t {
 
     // q = aX is finalized
     cgbn_mont_mul(_env, q, u, w, modulus, np0); // AA*BB
-        assert_normalized(_env, q, modulus);
+        assert_normalized(q, modulus);
     cgbn_mont2bn(_env, q, q, modulus, np0);
-        assert_normalized(_env, q, modulus);
+        assert_normalized(q, modulus);
 
     cgbn_sub(_env, w, w, u); // K = AA-BB
     normalize_subtraction(w, modulus);
@@ -311,54 +314,67 @@ class curve_t {
     // TODO use cgbn_mul_ui32 then normalize_mul_ui32
     //uint32_t carry = cgbn_mul_ui32(_env, t2, w, d); // dK
     //normalize_mul_ui32(_env, t2, modulus, np0);
-    cgbn_set_ui32(_env, t2, d);  // d
+    cgbn_set_ui32(_env, t2, d);  // d_z
+    cgbn_bn2mont(_env, t2, t2, modulus); // TODO: pass d in montgomery form
     cgbn_mont_mul(_env, t2, w, t2, modulus, np0);  // dK
-        assert_normalized(_env, t2, modulus);
+        assert_normalized(t2, modulus);
 
 
     cgbn_add(_env, u, u, t2); // BB + dK
-    normalize_addition(_env, u, modulus);
+    normalize_addition(u, modulus);
     {
-        assert_normalized(_env, w, modulus);
-        assert_normalized(_env, t2, modulus);
-        assert_normalized(_env, u, modulus);
+        assert_normalized(w, modulus);
+        assert_normalized(t2, modulus);
+        assert_normalized(u, modulus);
         if (thread_i == 0)
-            printf("\t\t3\tdecimal %d | K = %d,  dK = %d,  BB + dk = %d\n",
+            printf("\t\t3\tdecimal %d, d = %d | K = %d,  dK = %d,  BB + dk = %d\n",
                     cgbn_get_ui32(_env, q),
+                    d,
                     cgbn_get_ui32(_env, w),
                     cgbn_get_ui32(_env, t2),
                     cgbn_get_ui32(_env, u));
     }
-    return
 
     // u = aY is finalized
     cgbn_mont_mul(_env, u, w, u, modulus, np0); // K(BB+dK)
-        assert_normalized(_env, u, modulus);
+        assert_normalized(u, modulus);
     cgbn_mont2bn(_env, u, u, modulus, np0);
-        assert_normalized(_env, u, modulus);
+        assert_normalized(u, modulus);
 
     cgbn_add(_env, w, v, t); // DA + CB
+    normalize_addition(w, modulus);
     cgbn_sub(_env, v, v, t); // DA - CB
     normalize_subtraction(v, modulus);
     {
-        assert_normalized(_env, w, modulus);
-        assert_normalized(_env, v, modulus);
+        assert_normalized(w, modulus);
+        assert_normalized(v, modulus);
+        if (thread_i == 0)
+            printf("\t\t4\tdecimal %d | %d, %d\n",
+                    cgbn_get_ui32(_env, u),
+                    cgbn_get_ui32(_env, w),
+                    cgbn_get_ui32(_env, v));
     }
 
     // w = bX is finalized
     cgbn_mont_sqr(_env, w, w, modulus, np0); // (DA+CB)^2 mod N
-        assert_normalized(_env, w, modulus);
+        assert_normalized(w, modulus);
     cgbn_mont2bn(_env, w, w, modulus, np0);
-        assert_normalized(_env, w, modulus);
+        assert_normalized(w, modulus);
 
     cgbn_mont_sqr(_env, v, v, modulus, np0); // (DA-CB)^2 mod N
-        assert_normalized(_env, v, modulus);
+        assert_normalized(v, modulus);
 
     // v = bY is finalized
     cgbn_add(_env, v, v, v); // double
-        assert_normalized(_env, v, modulus);
+    normalize_addition(v, modulus);
+        assert_normalized(v, modulus);
     cgbn_mont2bn(_env, v, v, modulus, np0);
-        assert_normalized(_env, v, modulus);
+        assert_normalized(v, modulus);
+
+    if (thread_i == 0)
+        printf("\t\t5\tdecimal %d %d\n",
+                cgbn_get_ui32(_env, w),
+                cgbn_get_ui32(_env, v));
   }
 
   __host__ static instance_t *generate_instances(uint32_t count) {
@@ -370,12 +386,13 @@ class curve_t {
     for(int index=0;index<count;index++) {
         instance_t &instance = instances[index];
 
+        // XXX: calc d_z from sigma
         // XXX: 2P_y depends on d which depends on bits!
 
-        // N, P1_x, P1_y, 2P_x, 2P_y, "d", s
+        // N, P1_x, P1_y, 2P_x, 2P_y, "d_z", s
         char data[][100] = {
-            "2147483647", "2", "1", "9", "776", "12", "2"
-            // "2147483647", "2", "1", "9", "392", "6", "2520"
+            // "2147483647", "2", "1", "9", "392", "6", "2"
+            "2147483647", "2", "1", "9", "392", "6", "2520"
         };
 
         // N
@@ -394,7 +411,7 @@ class curve_t {
         mpz_set_str(x, data[4], 10);
         from_mpz(x, instance.bY._limbs, params::BITS/32);
 
-        // d (in colab)
+        // d_z (not montgomery) (in colab) | d = (sigma / 2^32) mod N
         instance.d = atol(data[5]);
 
         // s
