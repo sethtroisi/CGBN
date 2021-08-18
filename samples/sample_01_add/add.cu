@@ -26,6 +26,7 @@ IN THE SOFTWARE.
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <cassert>
 #include <cuda.h>
 #include <gmp.h>
 #include "cgbn/cgbn.h"
@@ -41,13 +42,13 @@ IN THE SOFTWARE.
  *    random_words(uint32_t *words, uint32_t count)
  *       fills words[0 .. count-1] with random data
  *
- *    add_words(uint32_t *r, uint32_t *a, uint32_t *b, uint32_t count) 
+ *    add_words(uint32_t *r, uint32_t *a, uint32_t *b, uint32_t count)
  *       sets bignums r = a+b, where r, a, and b are count words in length
  *
  *    compare_words(uint32_t *a, uint32_t *b, uint32_t count)
  *       compare bignums a and b, where a and b are count words in length.
  *       return 1 if a>b, 0 if a==b, and -1 if b>a
- *    
+ *
  *    CUDA_CHECK(call) is a macro that checks a CUDA result for an error,
  *    if an error is present, it prints out the error, call, file and line.
  *
@@ -55,43 +56,78 @@ IN THE SOFTWARE.
  *    if so, it prints out the error, and instance information
  *
  ************************************************************************************************/
- 
+
 // IMPORTANT:  DO NOT DEFINE TPI OR BITS BEFORE INCLUDING CGBN
 #define TPI 32
 #define BITS 1024
-#define INSTANCES 100000
+#define INSTANCES 700
 
 // Declare the instance type
 typedef struct {
   cgbn_mem_t<BITS> a;
   cgbn_mem_t<BITS> b;
-  cgbn_mem_t<BITS> sum;
+  cgbn_mem_t<BITS> square;
 } instance_t;
 
 // support routine to generate random instances
 instance_t *generate_instances(uint32_t count) {
   instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
 
+  mpz_t a, b;
+
+  mpz_init(a);
+  mpz_init(b);
+
   for(int index=0;index<count;index++) {
-    random_words(instances[index].a._limbs, BITS/32);
-    random_words(instances[index].b._limbs, BITS/32);
+      // 2^index - 1
+      mpz_ui_pow_ui(b, 2, index);
+      mpz_sub_ui(b, b, 1);
+
+ //   from_mpz(a, instances[index].a._limbs, BITS/32);
+    from_mpz(b, instances[index].b._limbs, BITS/32);
+    //random_words(instances[index].a._limbs, BITS/32);
+    //random_words(instances[index].b._limbs, BITS/32);
   }
+
+  mpz_clear(a);
+  mpz_clear(b);
   return instances;
 }
 
 // support routine to verify the GPU results using the CPU
-void verify_results(instance_t *instances, uint32_t count) {
-  uint32_t correct[BITS/32];
-  
+void verify_result(instance_t *instances, uint32_t count) {
+  mpz_t a, b, r, t;
+  mpz_init(a);
+  mpz_init(b);
+  mpz_init(r);
+  mpz_init(t);
+
   for(int index=0;index<count;index++) {
-    add_words(correct, instances[index].a._limbs, instances[index].b._limbs, BITS/32);
-    if(compare_words(correct, instances[index].sum._limbs, BITS/32)!=0) {
-      printf("gpu add kernel failed on instance %d\n", index);
-      return;
-    }
+    to_mpz(a, instances[index].a._limbs, BITS/32);
+    to_mpz(b, instances[index].b._limbs, BITS/32);
+    to_mpz(r, instances[index].square._limbs, BITS/32);
+
+    //mpz_sub(t, b, a);
+    //gmp_printf("%d | a: -%Zd ", index, t);
+    //mpz_sub(t, b, r);
+    //gmp_printf("a^2: -%Zd\n", t);
+
+    gmp_printf("N: %Zd\nA: %Zd\nA^2: %Zd\n", b, a, r);
+
+    mpz_mod(r, r, b);
+
+    gmp_printf("A^2(mod): %Zd\n", r);
+
+    break;
   }
   printf("All results match\n");
-}
+
+  mpz_clear(a);
+  mpz_clear(b);
+  mpz_clear(r);
+  mpz_clear(t);
+ }
+
 
 // helpful typedefs for the kernel
 typedef cgbn_context_t<TPI>         context_t;
@@ -99,10 +135,10 @@ typedef cgbn_env_t<context_t, BITS> env_t;
 
 // the actual kernel
 __global__ void kernel_add(cgbn_error_report_t *report, instance_t *instances, uint32_t count) {
-  int32_t instance;
-  
   // decode an instance number from the blockIdx and threadIdx
-  instance=(blockIdx.x*blockDim.x + threadIdx.x)/TPI;
+  int32_t instance = (blockIdx.x*blockDim.x + threadIdx.x) / TPI;
+  uint32_t thread_i = (blockIdx.x*blockDim.x + threadIdx.x) % TPI;
+
   if(instance>=count)
     return;
 
@@ -112,25 +148,49 @@ __global__ void kernel_add(cgbn_error_report_t *report, instance_t *instances, u
 
   cgbn_load(bn_env, a, &(instances[instance].a));      // load my instance's a value
   cgbn_load(bn_env, b, &(instances[instance].b));      // load my instance's b value
-  cgbn_add(bn_env, r, a, b);                           // r=a+b
-  cgbn_store(bn_env, &(instances[instance].sum), r);   // store r into sum
+
+
+  // Find np0 for this n
+  cgbn_set_ui32(bn_env, r, 1);
+  uint32_t np0 = cgbn_bn2mont(bn_env, r, r, b);
+  // MIGHT BE REDHERRING BUT bn2mont(1) is the same as A^2 mod n
+  //cgbn_set_ui32(bn_env, r, 0);
+
+  cgbn_sub(bn_env, a, b, r);
+
+  // a is already in montgomery form
+  int32_t compare = cgbn_compare(bn_env, a, b);
+  if (instance == 0 && thread_i == 0) {
+      printf("np0: %u\n", np0);
+      printf("a > b: %d\n", compare);
+  }
+  cgbn_mont_sqr(bn_env, r, a, b, np0);
+  int32_t compare2 = cgbn_compare(bn_env, r, b);
+  //if (instance == 0 && thread_i == 0) {
+  //    printf("a^2 > b: %d %s\n", compare2, compare2 < 0 ? "" : "error");
+  //}
+  if (compare2 >= 0 && thread_i == 0) {
+      printf("(2^%d) a^2 > b: %d %s\n", instance, compare2, compare2 < 0 ? "" : "error");
+  }
+
+  cgbn_store(bn_env, &(instances[instance].square), r);   // store r into square
 }
 
 int main() {
   instance_t          *instances, *gpuInstances;
   cgbn_error_report_t *report;
-  
+
   printf("Genereating instances ...\n");
   instances=generate_instances(INSTANCES);
-  
+
   printf("Copying instances to the GPU ...\n");
   CUDA_CHECK(cudaSetDevice(0));
   CUDA_CHECK(cudaMalloc((void **)&gpuInstances, sizeof(instance_t)*INSTANCES));
   CUDA_CHECK(cudaMemcpy(gpuInstances, instances, sizeof(instance_t)*INSTANCES, cudaMemcpyHostToDevice));
-  
+
   // create a cgbn_error_report for CGBN to report back errors
-  CUDA_CHECK(cgbn_error_report_alloc(&report)); 
-  
+  CUDA_CHECK(cgbn_error_report_alloc(&report));
+
   printf("Running GPU kernel ...\n");
   // launch with 32 threads per instance, 128 threads (4 instances) per block
   kernel_add<<<(INSTANCES+3)/4, 128>>>(report, gpuInstances, INSTANCES);
@@ -138,14 +198,13 @@ int main() {
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
   CUDA_CHECK(cudaDeviceSynchronize());
   CGBN_CHECK(report);
-    
+
   // copy the instances back from gpuMemory
   printf("Copying results back to CPU ...\n");
   CUDA_CHECK(cudaMemcpy(instances, gpuInstances, sizeof(instance_t)*INSTANCES, cudaMemcpyDeviceToHost));
-  
-  printf("Verifying the results ...\n");
-  verify_results(instances, INSTANCES);
-  
+
+  verify_result(instances, INSTANCES);
+
   // clean up
   free(instances);
   CUDA_CHECK(cudaFree(gpuInstances));
