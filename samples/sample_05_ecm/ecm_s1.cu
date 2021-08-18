@@ -48,8 +48,11 @@ IN THE SOFTWARE.
 //   BITS            - number of bits per instance
 //   WINDOW_BITS     - number of bits to use for the windowed exponentiation
 
+// See cgbn_error_t enum (cgbn.h:39)
+#define cgbn_normalized_error ((cgbn_error_t) 14)
+
 template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
-class powm_params_t {
+class ecm_params_t {
   public:
   // parameters used by the CGBN context
   static const uint32_t TPB=0;                     // get TPB from blockDim.x
@@ -78,7 +81,7 @@ class curve_t {
     uint32_t d;
 
     uint32_t num_bits;
-    char s_bits[100]; // TODO dynamically copy this
+    char s_bits[64]; // TODO dynamically copy this
   } instance_t;
 
   typedef cgbn_context_t<params::TPI, params>   context_t;
@@ -101,10 +104,11 @@ class curve_t {
    *
    * everything (including d) in montgomery form
    */
-  __device__ __forceinline__ void double_add(
+  __device__ __forceinline__ void double_add_v1(
           bn_t &aX, bn_t &aY,
           bn_t &bX, bn_t &bY,
           uint32_t d,
+          uint32_t bit,
           const bn_t &modulus) {
     /**
      * compute S!(P) using repeated double and add
@@ -115,17 +119,15 @@ class curve_t {
 
     // find np0 correctly
     uint32_t np0 = cgbn_bn2mont(_env, temp, aX, modulus);
-    //printf("Hi %d => %d\n", _instance, np0);
+    //printf("Hi v1 %d,%d => %d\n", _instance, bit, np0);
 
     cgbn_add(_env, C, bY, bX);
     cgbn_sub(_env, D, bY, bX);
-
     // TODO remove this with do normalize or do mod or something.
     cgbn_add(_env, D, D, modulus);
 
     cgbn_add(_env, A, aY, aX);
     cgbn_sub(_env, B, aY, aX);
-
     // TODO remove this with do normalize or do mod or something.
     cgbn_add(_env, B, B, modulus);
 
@@ -134,7 +136,8 @@ class curve_t {
     cgbn_set(_env, aY, D);
     cgbn_set(_env, bX, A);
     cgbn_set(_env, bY, B);
-*/
+    return
+// */
 
     cgbn_mont_mul(_env, CB, C, B, modulus, np0);
     cgbn_mont_mul(_env, DA, D, A, modulus, np0);
@@ -147,7 +150,7 @@ class curve_t {
     cgbn_set(_env, aY, B);
     cgbn_set(_env, bX, AA);
     cgbn_set(_env, bY, BB);
-*/
+// */
 
     // Overwrite aX with result
     cgbn_mont_mul(_env, aX, AA, BB, modulus, np0);
@@ -174,6 +177,190 @@ class curve_t {
     cgbn_add(_env, bY, temp, temp);
   }
 
+
+  // Verify 0 <= r < modulus
+  __device__ __forceinline__ void assert_normalized(env_t env, bn_t &r, const bn_t &modulus) {
+    if (_context.check_errors()) {
+
+        // Negative overflow
+        if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
+            _context.report_error(cgbn_normalized_error);
+        }
+        // Positive overflow
+        if (cgbn_compare(_env, r, modulus) >= 0) {
+            _context.report_error(cgbn_normalized_error);
+        }
+    }
+  }
+
+  // Normalize after addition
+  __device__ __forceinline__ void normalize_addition(env_t env, bn_t &r, const bn_t &modulus) {
+
+      if (cgbn_compare(_env, r, modulus) >= 0) {
+          cgbn_sub(_env, r, r, modulus);
+      }
+  }
+
+  // Normalize after subtraction
+  __device__ __forceinline__ void normalize_subtraction(bn_t &r, const bn_t &modulus) {
+
+      if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
+          cgbn_add(_env, r, r, modulus);
+      }
+  }
+
+  // Normalize after multiplication by uint32
+  //__device__ __forceinline__ void normalize_mul_ui32(env_t env, bn_t &r, const bn_t &modulus, uint32_t np0) {
+  //    NO IDEA HOW TO IMPLEMENT.
+  //    POSSIBLE IDEAS:
+  //        implement cgbn_mont_reduce
+  //        implement cgbn_mont_mul_ui32
+  //            I don't think this is any different than cgbn_mul_ui32 with mont_reduce
+  //            maybe needs extra carry info or something
+  //
+  //        use barrett (or mont) rem somehow
+  //}
+
+  __device__ __forceinline__ void double_add_v2(
+          bn_t &q, bn_t &u,
+          bn_t &w, bn_t &v,
+          uint32_t d,
+          uint32_t bit,
+          const bn_t &modulus) {
+
+    uint32_t thread_i = (blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
+
+    // q = xA = aX
+    // u = zA = aY
+    // w = xB = bX
+    // v = zB = bY
+
+    //cgbn_set_ui32(_env, q, 0);
+    //cgbn_set_ui32(_env, u, 0);
+    //cgbn_set_ui32(_env, w, 0);
+    //cgbn_set_ui32(_env, v, 0);
+
+    // t2 is only needed once (BB + dK), see if it can be optimized around
+    bn_t t, t2;
+    // find np0 correctly
+    uint32_t np0 = cgbn_bn2mont(_env, t, q, modulus);
+    if (thread_i == 0) {
+        printf("\tv2 %d,%d | np0 %d\n", _instance, bit, np0);
+    }
+
+    // Convert everything to mont
+    cgbn_bn2mont(_env, q, q, modulus);
+    cgbn_bn2mont(_env, u, u, modulus);
+    cgbn_bn2mont(_env, w, w, modulus);
+    cgbn_bn2mont(_env, v, v, modulus);
+    { // TODO: move behind a flag
+        assert_normalized(_env, q, modulus);
+        assert_normalized(_env, u, modulus);
+        assert_normalized(_env, w, modulus);
+        assert_normalized(_env, v, modulus);
+        if (thread_i == 0)
+            printf("\t\t0\t(%d, %d),  (%d, %d)\n",
+                    cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
+                    cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
+    }
+
+    cgbn_add(_env, t, v, w); // t = (bY + bX)
+    normalize_addition(_env, t, modulus);
+    cgbn_sub(_env, v, v, w); // v = (bY - bX)
+    normalize_subtraction(v, modulus);
+    cgbn_add(_env, w, u, q); // w = (aY + aX)
+    normalize_addition(_env, w, modulus);
+    cgbn_sub(_env, u, u, q); // u = (aY - aX)
+    normalize_subtraction(u, modulus);
+    {
+        assert_normalized(_env, t, modulus);
+        assert_normalized(_env, v, modulus);
+        assert_normalized(_env, w, modulus);
+        assert_normalized(_env, u, modulus);
+        if (thread_i == 0)
+            printf("\t\t1\t(%d, %d),  (%d, %d)\n",
+                    cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
+                    cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
+    }
+
+    cgbn_mont_mul(_env, t, t, u, modulus, np0); // C*B
+    cgbn_mont_mul(_env, v, v, w, modulus, np0); // D*A
+    // TODO check if using temporary is faster?
+    cgbn_mont_sqr(_env, w, w, modulus, np0);    // AA
+    cgbn_mont_sqr(_env, u, u, modulus, np0);    // BB
+    {
+        assert_normalized(_env, t, modulus);
+        assert_normalized(_env, v, modulus);
+        assert_normalized(_env, w, modulus);
+        assert_normalized(_env, u, modulus);
+        if (thread_i == 0)
+            printf("\t\t2\t(%d, %d),  (%d, %d)\n",
+                    cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
+                    cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
+    }
+
+    // q = aX is finalized
+    cgbn_mont_mul(_env, q, u, w, modulus, np0); // AA*BB
+        assert_normalized(_env, q, modulus);
+    cgbn_mont2bn(_env, q, q, modulus, np0);
+        assert_normalized(_env, q, modulus);
+
+    cgbn_sub(_env, w, w, u); // K = AA-BB
+    normalize_subtraction(w, modulus);
+
+    // TODO use cgbn_mul_ui32 then normalize_mul_ui32
+    //uint32_t carry = cgbn_mul_ui32(_env, t2, w, d); // dK
+    //normalize_mul_ui32(_env, t2, modulus, np0);
+    cgbn_set_ui32(_env, t2, d);  // d
+    cgbn_mont_mul(_env, t2, w, t2, modulus, np0);  // dK
+        assert_normalized(_env, t2, modulus);
+
+
+    cgbn_add(_env, u, u, t2); // BB + dK
+    normalize_addition(_env, u, modulus);
+    {
+        assert_normalized(_env, w, modulus);
+        assert_normalized(_env, t2, modulus);
+        assert_normalized(_env, u, modulus);
+        if (thread_i == 0)
+            printf("\t\t3\tdecimal %d | K = %d,  dK = %d,  BB + dk = %d\n",
+                    cgbn_get_ui32(_env, q),
+                    cgbn_get_ui32(_env, w),
+                    cgbn_get_ui32(_env, t2),
+                    cgbn_get_ui32(_env, u));
+    }
+    return
+
+    // u = aY is finalized
+    cgbn_mont_mul(_env, u, w, u, modulus, np0); // K(BB+dK)
+        assert_normalized(_env, u, modulus);
+    cgbn_mont2bn(_env, u, u, modulus, np0);
+        assert_normalized(_env, u, modulus);
+
+    cgbn_add(_env, w, v, t); // DA + CB
+    cgbn_sub(_env, v, v, t); // DA - CB
+    normalize_subtraction(v, modulus);
+    {
+        assert_normalized(_env, w, modulus);
+        assert_normalized(_env, v, modulus);
+    }
+
+    // w = bX is finalized
+    cgbn_mont_sqr(_env, w, w, modulus, np0); // (DA+CB)^2 mod N
+        assert_normalized(_env, w, modulus);
+    cgbn_mont2bn(_env, w, w, modulus, np0);
+        assert_normalized(_env, w, modulus);
+
+    cgbn_mont_sqr(_env, v, v, modulus, np0); // (DA-CB)^2 mod N
+        assert_normalized(_env, v, modulus);
+
+    // v = bY is finalized
+    cgbn_add(_env, v, v, v); // double
+        assert_normalized(_env, v, modulus);
+    cgbn_mont2bn(_env, v, v, modulus, np0);
+        assert_normalized(_env, v, modulus);
+  }
+
   __host__ static instance_t *generate_instances(uint32_t count) {
     instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
 
@@ -183,31 +370,47 @@ class curve_t {
     for(int index=0;index<count;index++) {
         instance_t &instance = instances[index];
 
-        mpz_set_ui(x, 8);
-        from_mpz(x, instance.aX._limbs, params::BITS/32);
-        mpz_set_ui(x, 2);
-        from_mpz(x, instance.aY._limbs, params::BITS/32);
+        // XXX: 2P_y depends on d which depends on bits!
 
-        mpz_set_ui(x, 18);
-        from_mpz(x, instance.bX._limbs, params::BITS/32);
-        mpz_set_ui(x, 2960);
-        from_mpz(x, instance.bY._limbs, params::BITS/32);
+        // N, P1_x, P1_y, 2P_x, 2P_y, "d", s
+        char data[][100] = {
+            "2147483647", "2", "1", "9", "776", "12", "2"
+            // "2147483647", "2", "1", "9", "392", "6", "2520"
+        };
 
-        mpz_set_ui(x, 2147483647);
+        // N
+        mpz_set_str(x, data[0], 10);
         from_mpz(x, instance.modulus._limbs, params::BITS/32);
 
-        instance.d = 23; // d_z in colab
+        // P1 (X, Y)
+        mpz_set_str(x, data[1], 10);
+        from_mpz(x, instance.aX._limbs, params::BITS/32);
+        mpz_set_str(x, data[2], 10);
+        from_mpz(x, instance.aY._limbs, params::BITS/32);
 
+        // 2P = P2 (X, Y)
+        mpz_set_str(x, data[3], 10);
+        from_mpz(x, instance.bX._limbs, params::BITS/32);
+        mpz_set_str(x, data[4], 10);
+        from_mpz(x, instance.bY._limbs, params::BITS/32);
 
-        mpz_set_ui(x, 2520);
+        // d (in colab)
+        instance.d = atol(data[5]);
+
+        // s
+        mpz_set_str(x, data[6], 10);
         instance.num_bits = mpz_sizeinbase(x, 2) - 1;
         assert( instance.num_bits <= 100 );
         for (int i = 0; i < instance.num_bits; i++) {
             instance.s_bits[i] = mpz_tstbit (x, instance.num_bits - 1 - i);
-            //printf("%d => %d\n", i, instance.s_bits[i]);
+            if (index == 0) {
+             //   printf("%d => %d\n", i, instance.s_bits[i]);
+            }
         }
 
-        instance.num_bits = 144343;
+        //instance.num_bits = 1;
+
+        //instance.num_bits = 14434;
     }
 
     mpz_clear(x);
@@ -222,14 +425,13 @@ class curve_t {
 
 template<class params>
 __global__ void kernel_double_add(cgbn_error_report_t *report, typename curve_t<params>::instance_t *instances, uint32_t count) {
-  int32_t instance_i;
-  //int32_t instance_j;
-
   // decode an instance_i number from the blockIdx and threadIdx
-  instance_i=(blockIdx.x*blockDim.x + threadIdx.x)/params::TPI;
-  //instance_j=(blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
+  int32_t instance_i=(blockIdx.x*blockDim.x + threadIdx.x)/params::TPI;
+  int32_t instance_j=(blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
   if(instance_i >= count)
     return;
+
+  if (instance_j == -123) return;   // avoid unused warning
 
   curve_t<params>                 curve(cgbn_report_monitor, report, instance_i);
   typename curve_t<params>::bn_t  aX, aY, bX, bY, modulus;
@@ -246,13 +448,26 @@ __global__ void kernel_double_add(cgbn_error_report_t *report, typename curve_t<
 
   uint32_t d = instance.d;
 
-  // Do the progressive queue thing.
+  /**
+   * compute S!(P) using repeated double and add
+   * https://en.wikipedia.org/wiki/Elliptic_curve_point_multiplication#Point_doubling
+   */
+
+  // TODO Do the progressive queue thing.
   for (int b = 0; b < instance.num_bits; b++) {
     //if (instance_j == 0) printf("%d => %d\n", b, instance.s_bits[b]);
-    if (instance.s_bits[b & 7] == 0) {
-        curve.double_add(aX, aY, bX, bY, d, modulus);
+    if (instance_j == 0) {
+        printf("%d => %d\t|| (%d, %d),  (%d, %d)\n",
+                b, instance.s_bits[b],
+                cgbn_get_ui32(curve._env, aX), cgbn_get_ui32(curve._env, aY),
+                cgbn_get_ui32(curve._env, bX), cgbn_get_ui32(curve._env, bY));
+    }
+
+
+    if (instance.s_bits[b & 63] == 0) { // TODO cleanup in real code
+        curve.double_add_v2(aX, aY, bX, bY, d, b, modulus);
     } else {
-        curve.double_add(bX, bY, aX, aY, d, modulus);
+        curve.double_add_v2(bX, bY, aX, aY, d, b, modulus);
     }
   }
 
@@ -306,21 +521,36 @@ void run_test(uint32_t instance_count) {
       instance_count / diff);
 
 
-  mpz_t x, y;
+  mpz_t x, y, n;
   mpz_init(x);
   mpz_init(y);
+  mpz_init(n);
   for(int index=0; index<instance_count; index++) {
+    if (index >= 1) break;
     instance_t &instance = instances[index];
 
     to_mpz(x, instance.aX._limbs, params::BITS/32);
     to_mpz(y, instance.aY._limbs, params::BITS/32);
-    //gmp_printf("pA: (%Zd, %Zd)\n", x, y);
+    gmp_printf("pA: (%Zd, %Zd)\n", x, y);
     to_mpz(x, instance.bX._limbs, params::BITS/32);
     to_mpz(y, instance.bY._limbs, params::BITS/32);
-    //gmp_printf("pB: (%Zd, %Zd)\n", x, y);
+    gmp_printf("pB: (%Zd, %Zd)\n", x, y);
+
+    to_mpz(n, instance.modulus._limbs, params::BITS/32);
+    to_mpz(x, instance.aX._limbs, params::BITS/32);
+    to_mpz(y, instance.aY._limbs, params::BITS/32);
+
+    mpz_invert(y, y, n);    // aY ^ (N-2) % N
+
+    to_mpz(x, instance.aX._limbs, params::BITS/32);
+    mpz_mul(x, x, y);         // aX * aY^-1
+    mpz_mod(x, x, n);
+
+    gmp_printf("X= %Zd\n", x);
   }
   mpz_clear(x);
   mpz_clear(y);
+  mpz_clear(n);
 
   // clean up
   free(instances);
@@ -329,8 +559,11 @@ void run_test(uint32_t instance_count) {
 }
 
 int main() {
-  typedef powm_params_t<8, 1024, 5> params;
+  typedef ecm_params_t<8, 1024, 5> params;
 
+  run_test<params>(1);
+  /*
+  // Warm up
   run_test<params>(256);
 
   run_test<params>(16 * 63);
@@ -342,4 +575,5 @@ int main() {
   run_test<params>(1794);
   run_test<params>(2000);
   run_test<params>(1780 * 2);
+  // */
 }
