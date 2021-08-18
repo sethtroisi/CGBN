@@ -127,7 +127,7 @@ class curve_t {
 
     // find np0 correctly
     uint32_t np0 = cgbn_bn2mont(_env, temp, aX, modulus);
-    //printf("Hi v1 %d,%d => %d\n", _instance, bit, np0);
+    //printf("Hi v1 %d,%d => %u\n", _instance, bit, np0);
 
     cgbn_add(_env, C, bY, bX);
     cgbn_sub(_env, D, bY, bX);
@@ -223,17 +223,23 @@ class curve_t {
    * This removes a factor of 2^32 which is not present in m.
    * Otherwise m (really d) needs to be passed as a bigint not a uint32
    */
-  __device__ FORCE_INLINE void special_mult_ui32(bn_t &r, uint32_t m, const bn_t &modulus, bn_t &temp) {
+  __device__ FORCE_INLINE void special_mult_ui32(bn_t &r, uint32_t m, const bn_t &modulus, uint32_t np0, bn_t &temp) {
+    //uint32_t thread_i = (blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
+
     uint32_t carry_t1 = cgbn_mul_ui32(_env, r, r, m);
     uint32_t t1_0 = cgbn_extract_bits_ui32(_env, r, 0, 32);
-    uint32_t carry_t2 = cgbn_mul_ui32(_env, temp, modulus, t1_0);
+    uint32_t q = t1_0 * np0;
+    uint32_t carry_t2 = cgbn_mul_ui32(_env, temp, modulus, q);
 
     // Should add back carry_t1, carry_t2 to the top of r, temp
     cgbn_shift_right(_env, r, r, 32);
     cgbn_shift_right(_env, temp, temp, 32);
 
     int32_t carry_q = cgbn_add(_env, r, r, temp);
-    carry_q += cgbn_add_ui32(_env, r, r, 1); //1 * (t1_0 != 0));
+    carry_q += cgbn_add_ui32(_env, r, r, t1_0 != 0);
+
+    //if (thread_i == 0)
+    //    printf("np0: %u, m: %u, q: %u | carry_q: %u\n", np0, m, q, carry_q);
 
     while (carry_q != 0) {
         carry_q -= cgbn_sub(_env, r, r, modulus);
@@ -266,8 +272,8 @@ class curve_t {
     // find np0 correctly
     uint32_t np0 = cgbn_bn2mont(_env, t, q, modulus);
     if (PRINT_DEBUG && thread_i == 0) {
-        printf("\tv2 %d,%d | np0 %d\n", _instance, bit, np0);
-        printf("\t\tin\t(%d, %d),  (%d, %d)\n",
+        printf("\tv2 %d,%d | np0 %u\n", _instance, bit, np0);
+        printf("\t\tin\t(%u, %u),  (%u, %u)\n",
                 cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
     }
@@ -284,7 +290,7 @@ class curve_t {
         assert_normalized(v, modulus);
     }
     if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t0\t(%d, %d),  (%d, %d)\n",
+        printf("\t\t0\t(%u, %u),  (%u, %u)\n",
                 cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
 
@@ -303,7 +309,7 @@ class curve_t {
         assert_normalized(u, modulus);
     }
     if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t1\t(%d, %d),  (%d, %d)\n",
+        printf("\t\t1\t(%u, %u),  (%u, %u)\n",
                 cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
@@ -319,7 +325,7 @@ class curve_t {
         assert_normalized(u, modulus);
     }
     if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t2\t(%d, %d),  (%d, %d)\n",
+        printf("\t\t2\t(%u, %u),  (%u, %u)\n",
                 cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
@@ -336,7 +342,7 @@ class curve_t {
     //cgbn_bn2mont(_env, t2, t2, modulus); // TODO: pass d in montgomery form
     //cgbn_mont_mul(_env, t2, w, t2, modulus, np0);  // dK
     cgbn_set(_env, t2, w);
-    special_mult_ui32(t2, d, modulus, t3);
+    special_mult_ui32(t2, d, modulus, np0, t3);
         assert_normalized(t2, modulus);
 
     // By definition of d = (sigma / 2^32) % MODN
@@ -351,7 +357,7 @@ class curve_t {
         assert_normalized(u, modulus);
     }
     if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t3\tdecimal %d, d = %d | K = %d,  dK = %d,  BB + dk = %d\n",
+        printf("\t\t3\tdecimal %u, d = %u | K = %u,  dK = %u,  BB + dk = %u\n",
                 cgbn_get_ui32(_env, q),
                 d,
                 cgbn_get_ui32(_env, w),
@@ -373,7 +379,7 @@ class curve_t {
         assert_normalized(v, modulus);
     }
         if (PRINT_DEBUG && thread_i == 0)
-            printf("\t\t4\tdecimal %d | %d, %d\n",
+            printf("\t\t4\tdecimal %u | %u, %u\n",
                     cgbn_get_ui32(_env, u),
                     cgbn_get_ui32(_env, w),
                     cgbn_get_ui32(_env, v));
@@ -395,7 +401,7 @@ class curve_t {
         assert_normalized(v, modulus);
 
     if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t5\tdecimal %d %d\n",
+        printf("\t\t5\tdecimal %u %u\n",
                 cgbn_get_ui32(_env, w),
                 cgbn_get_ui32(_env, v));
   }
@@ -468,9 +474,9 @@ class curve_t {
         // "2147483647", "2", "1", "9", "392", "12", "2"
         // "2147483647", "2", "1", "9", "392", "12", "10"
         // "2147483647", "2", "1", "9", "392", "12", "100"
-         "2147483647", "2", "1", "9", "392", "12", "5000"
-        // "1751180522011351", "2", "1", "9", "392", "12", "2"
-        // "1751180522011351", "2", "1", "9", "392", "12", "10"
+        // "2147483647", "2", "1", "9", "392", "12", "5000"
+         "1751180522011351", "2", "1", "9", "1617503716737094", "12", "2"
+        // "1751180522011351", "2", "1", "9", "1617503716737094", "12", "10"
     };
 
     mpz_t x;
@@ -569,7 +575,7 @@ __global__ void kernel_double_add(
   // TODO Do the progressive queue thing.
   for (int b = 1; b <= s_bits[0]; b++) {
     if (PRINT_DEBUG && instance_j == 0) {
-        printf("%d => %d\t|| (%d, %d),  (%d, %d)\n",
+        printf("%d => %d\t|| (%u, %u),  (%u, %u)\n",
                 b-1, s_bits[b],
                 cgbn_get_ui32(curve._env, aX), cgbn_get_ui32(curve._env, aY),
                 cgbn_get_ui32(curve._env, bX), cgbn_get_ui32(curve._env, bY));
