@@ -51,10 +51,13 @@ IN THE SOFTWARE.
 // See cgbn_error_t enum (cgbn.h:39)
 #define cgbn_normalized_error ((cgbn_error_t) 14)
 
-#define PRINT_DEBUG false
+#define PRINT_DEBUG true
 
 // Seems to adds very small overhead
 #define VERIFY_NORMALIZED true
+
+#define FORCE_INLINE
+//__forceinline__
 
 
 template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
@@ -98,7 +101,7 @@ class curve_t {
   int32_t   _instance; // which curve instance is this
 
   // Constructor
-  __device__ __forceinline__ curve_t(cgbn_monitor_t monitor, cgbn_error_report_t *report, int32_t instance) :
+  __device__ FORCE_INLINE curve_t(cgbn_monitor_t monitor, cgbn_error_report_t *report, int32_t instance) :
       _context(monitor, report, (uint32_t)instance), _env(_context), _instance(instance) {}
 
 
@@ -109,7 +112,7 @@ class curve_t {
    *
    * everything (including d) in montgomery form
    */
-  __device__ __forceinline__ void double_add_v1(
+  __device__ FORCE_INLINE void double_add_v1(
           bn_t &aX, bn_t &aY,
           bn_t &bX, bn_t &bY,
           uint32_t d,
@@ -184,7 +187,7 @@ class curve_t {
 
 
   // Verify 0 <= r < modulus
-  __device__ __forceinline__ void assert_normalized(bn_t &r, const bn_t &modulus) {
+  __device__ FORCE_INLINE void assert_normalized(bn_t &r, const bn_t &modulus) {
     if (VERIFY_NORMALIZED && _context.check_errors()) {
 
         // Negative overflow
@@ -199,7 +202,7 @@ class curve_t {
   }
 
   // Normalize after addition
-  __device__ __forceinline__ void normalize_addition(bn_t &r, const bn_t &modulus) {
+  __device__ FORCE_INLINE void normalize_addition(bn_t &r, const bn_t &modulus) {
 
       if (cgbn_compare(_env, r, modulus) >= 0) {
           cgbn_sub(_env, r, r, modulus);
@@ -207,26 +210,38 @@ class curve_t {
   }
 
   // Normalize after subtraction
-  __device__ __forceinline__ void normalize_subtraction(bn_t &r, const bn_t &modulus) {
+  __device__ FORCE_INLINE void normalize_subtraction(bn_t &r, const bn_t &modulus) {
 
       if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
           cgbn_add(_env, r, r, modulus);
       }
   }
 
-  // Normalize after multiplication by uint32
-  //__device__ __forceinline__ void normalize_mul_ui32(env_t env, bn_t &r, const bn_t &modulus, uint32_t np0) {
-  //    NO IDEA HOW TO IMPLEMENT.
-  //    POSSIBLE IDEAS:
-  //        implement cgbn_mont_reduce
-  //        implement cgbn_mont_mul_ui32
-  //            I don't think this is any different than cgbn_mul_ui32 with mont_reduce
-  //            maybe needs extra carry info or something
-  //
-  //        use barrett (or mont) rem somehow
-  //}
+  /**
+   * Calculate (r * m) / 2^32 mod modulus
+   *
+   * This removes a factor of 2^32 which is not present in m.
+   * Otherwise m (really d) needs to be passed as a bigint not a uint32
+   */
+  __device__ FORCE_INLINE void special_mult_ui32(bn_t &r, uint32_t m, const bn_t &modulus, bn_t &temp) {
+    uint32_t carry_t1 = cgbn_mul_ui32(_env, r, r, m);
+    uint32_t t1_0 = cgbn_extract_bits_ui32(_env, r, 0, 32);
+    uint32_t carry_t2 = cgbn_mul_ui32(_env, temp, modulus, t1_0);
 
-  __device__ __forceinline__ void double_add_v2(
+    // Should add back carry_t1, carry_t2 to the top of r, temp
+    cgbn_shift_right(_env, r, r, 32);
+    cgbn_shift_right(_env, temp, temp, 32);
+
+    int32_t carry_q = cgbn_add(_env, r, r, temp);
+    carry_q += cgbn_add_ui32(_env, r, r, 1); //1 * (t1_0 != 0));
+
+    while (carry_q != 0) {
+        carry_q -= cgbn_sub(_env, r, r, modulus);
+    }
+  }
+
+
+  __device__ FORCE_INLINE void double_add_v2(
           bn_t &q, bn_t &u,
           bn_t &w, bn_t &v,
           uint32_t d,
@@ -246,7 +261,8 @@ class curve_t {
     //cgbn_set_ui32(_env, v, 0);
 
     // t2 is only needed once (BB + dK), see if it can be optimized around
-    bn_t t, t2;
+    // t3 is only used once (special_mult_ui32)
+    bn_t t, t2, t3;
     // find np0 correctly
     uint32_t np0 = cgbn_bn2mont(_env, t, q, modulus);
     if (PRINT_DEBUG && thread_i == 0) {
@@ -316,14 +332,16 @@ class curve_t {
     cgbn_sub(_env, w, w, u); // K = AA-BB
     normalize_subtraction(w, modulus);
 
-    // TODO use cgbn_mul_ui32 then normalize_mul_ui32
-    //uint32_t carry = cgbn_mul_ui32(_env, t2, w, d); // dK
-    //normalize_mul_ui32(_env, t2, modulus, np0);
-    cgbn_set_ui32(_env, t2, d);  // d_z
-    cgbn_bn2mont(_env, t2, t2, modulus); // TODO: pass d in montgomery form
-    cgbn_mont_mul(_env, t2, w, t2, modulus, np0);  // dK
+    //cgbn_set_ui32(_env, t2, d);  // d_z
+    //cgbn_bn2mont(_env, t2, t2, modulus); // TODO: pass d in montgomery form
+    //cgbn_mont_mul(_env, t2, w, t2, modulus, np0);  // dK
+    cgbn_set(_env, t2, w);
+    special_mult_ui32(t2, d, modulus, t3);
         assert_normalized(t2, modulus);
 
+    // By definition of d = (sigma / 2^32) % MODN
+    // K = k*R
+    // dK = d*k*R = (K * R * sigma) >> 32
 
     cgbn_add(_env, u, u, t2); // BB + dK
     normalize_addition(u, modulus);
@@ -447,10 +465,12 @@ class curve_t {
 
     // N, P1_x, P1_y, 2P_x, 2P_y, "d_z", B1
     char data[][100] = {
-        // "2147483647", "2", "1", "9", "392", "6", "1"
-        // "2147483647", "2", "1", "9", "392", "6", "10"
-         "2147483647", "2", "1", "9", "392", "6", "1000"
-        // "2147483647", "2", "1", "9", "392", "6", "20000"
+        // "2147483647", "2", "1", "9", "392", "12", "2"
+        // "2147483647", "2", "1", "9", "392", "12", "10"
+        // "2147483647", "2", "1", "9", "392", "12", "100"
+         "2147483647", "2", "1", "9", "392", "12", "5000"
+        // "1751180522011351", "2", "1", "9", "392", "12", "2"
+        // "1751180522011351", "2", "1", "9", "392", "12", "10"
     };
 
     mpz_t x;
@@ -458,7 +478,7 @@ class curve_t {
 
     // B1 => s / s_bits
     uint64_t B1 = atol(data[6]);
-    assert( 1 <= B1 && B1 <= 11000000 );
+    assert( 2 <= B1 && B1 <= 11000000 );
 
     compute_s_bits(x, B1);
     uint32_t num_bits = mpz_sizeinbase(x, 2) - 1;
