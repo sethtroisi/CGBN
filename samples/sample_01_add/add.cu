@@ -58,9 +58,9 @@ IN THE SOFTWARE.
  ************************************************************************************************/
 
 // IMPORTANT:  DO NOT DEFINE TPI OR BITS BEFORE INCLUDING CGBN
-#define TPI 32
+#define TPI 8
 #define BITS 1024
-#define INSTANCES 700
+#define INSTANCES 720
 
 // Declare the instance type
 typedef struct {
@@ -73,24 +73,19 @@ typedef struct {
 instance_t *generate_instances(uint32_t count) {
   instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
 
-  mpz_t a, b;
+  mpz_t n;
 
-  mpz_init(a);
-  mpz_init(b);
+  mpz_init(n);
 
   for(int index=0;index<count;index++) {
-      // 2^index - 1
-      mpz_ui_pow_ui(b, 2, index);
-      mpz_sub_ui(b, b, 1);
+    // 2^index - 1
+    mpz_ui_pow_ui(n, 2, index);
+    mpz_sub_ui(n, n, 1);
 
- //   from_mpz(a, instances[index].a._limbs, BITS/32);
-    from_mpz(b, instances[index].b._limbs, BITS/32);
-    //random_words(instances[index].a._limbs, BITS/32);
-    //random_words(instances[index].b._limbs, BITS/32);
+    from_mpz(n, instances[index].b._limbs, BITS/32);
   }
 
-  mpz_clear(a);
-  mpz_clear(b);
+  mpz_clear(n);
   return instances;
 }
 
@@ -98,7 +93,7 @@ instance_t *generate_instances(uint32_t count) {
 void verify_result(instance_t *instances, uint32_t count) {
   mpz_t a, b, r, t;
   mpz_init(a);
-  mpz_init(b);
+  mpz_init(b); // n
   mpz_init(r);
   mpz_init(t);
 
