@@ -51,11 +51,12 @@ IN THE SOFTWARE.
 // See cgbn_error_t enum (cgbn.h:39)
 #define cgbn_normalized_error ((cgbn_error_t) 14)
 
-#define PRINT_DEBUG false
+#define PRINT_DEBUG 0
 
 // Seems to adds very small overhead
-#define VERIFY_NORMALIZED true
+#define VERIFY_NORMALIZED 1
 
+// Dramatically increases compile time
 #define FORCE_INLINE
 //__forceinline__
 
@@ -75,6 +76,12 @@ class ecm_params_t {
   static const uint32_t WINDOW_BITS=window_bits;   // window size
 };
 
+// define the instance structure
+typedef struct {
+    uint64_t B1;
+    uint32_t num_bits;
+    char*     s_bits;
+} metadata_t;
 
 template<class params>
 class curve_t {
@@ -338,16 +345,13 @@ class curve_t {
     cgbn_sub(_env, w, w, u); // K = AA-BB
     normalize_subtraction(w, modulus);
 
-    //cgbn_set_ui32(_env, t2, d);  // d_z
-    //cgbn_bn2mont(_env, t2, t2, modulus); // TODO: pass d in montgomery form
-    //cgbn_mont_mul(_env, t2, w, t2, modulus, np0);  // dK
-    cgbn_set(_env, t2, w);
-    special_mult_ui32(t2, d, modulus, np0, t3);
-        assert_normalized(t2, modulus);
-
     // By definition of d = (sigma / 2^32) % MODN
     // K = k*R
     // dK = d*k*R = (K * R * sigma) >> 32
+    cgbn_set(_env, t2, w);
+    special_mult_ui32(t2, d, modulus, np0, t3); // t2 = dK (using t3 as temp)
+        assert_normalized(t2, modulus);
+
 
     cgbn_add(_env, u, u, t2); // BB + dK
     normalize_addition(u, modulus);
@@ -463,21 +467,24 @@ class curve_t {
       mpz_clear(ppz);
   }
 
-  __host__ static instance_t *generate_instances(int **s_bits_ptr, uint32_t count) {
+  __host__ static instance_t *generate_instances(metadata_t &run_data, uint32_t count) {
     instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
 
     // XXX: calc d_z from sigma
     // XXX: 2P_y depends on d which depends on bits (or np0)
 
-    // N, P1_x, P1_y, 2P_x, 2P_y, "d_z", B1
+    // N, P1_x, P1_y, 2P_x, 2P_y, B1
+    uint32_t sigma = 12;
     char data[][1000] = {
-        // "2147483647", "2", "1", "9", "392", "12", "2"
-        // "2147483647", "2", "1", "9", "392", "12", "10"
-        // "2147483647", "2", "1", "9", "392", "12", "100"
-        // "2147483647", "2", "1", "9", "392", "12", "5000"
-        // "1751180522011351", "2", "1", "9", "1617503716737094", "12", "2"
-        // "1751180522011351", "2", "1", "9", "1617503716737094", "12", "10"
-        // "1751180522011351", "2", "1", "9", "1617503716737094", "12", "1000"
+        // "2147483647", "2", "1", "9", "392", "2" // X = 2021483331
+        // "2147483647", "2", "1", "9", "392", "10" // X = 1250014575
+        // "2147483647", "2", "1", "9", "392", "100"
+        // "2147483647", "2", "1", "9", "392", "5000" // X = 1409594724
+        // "1751180522011351", "2", "1", "9", "1617503716737094", "2"
+        // "1751180522011351", "2", "1", "9", "1617503716737094", "10"
+        // "1751180522011351", "2", "1", "9", "1617503716737094", "1000"
+       // /*
+       // 2^971
        "199584030953471981165637271303683856606745126043545754150254724243721189186896406578495"
        "796549263570108934244684419249524397243798839359366073917179828483142032000567295108567"
        "651753772144436298718265335674454392399333081045512087038888885526844804415750712090687"
@@ -485,31 +492,35 @@ class curve_t {
        "356884058034667935071534999555976134431502448398254670173385246235825757718497049650840"
        "395479077524141551693709646313532109100458930777369869799339464574710187913001707390369"
        "746244738360231456848857406987764344929456259689650691221157703745683677939922890825308"
-       "9945390777036837155241992", "12", "10000" };
+       "9945390777036837155241992", "10000" // X = 192674 ... 701818
+       // */
+    };
+
     mpz_t x;
     mpz_init(x);
 
     // B1 => s / s_bits
-    uint64_t B1 = atol(data[6]);
+    uint64_t B1 = atol(data[5]);
     assert( 2 <= B1 && B1 <= 11000000 );
 
     compute_s_bits(x, B1);
     uint32_t num_bits = mpz_sizeinbase(x, 2) - 1;
-    printf("s (%d bits)", num_bits);
+    printf("B1=%lu S has %d bits", B1, num_bits);
     if (num_bits < 200) {
         gmp_printf(": %Zd", x);
     }
     printf("\n");
 
     assert( num_bits <= 65'535 );
+    run_data.B1 = B1;
+    run_data.num_bits = num_bits;
     // Use int* so that size can be stored in first element, could pass around extra size.
-    int* s_bits = *s_bits_ptr = (int*) malloc(sizeof(int) * (num_bits + 1));
-    s_bits[0] = num_bits;
+    run_data.s_bits = (char*) malloc(sizeof(char) * num_bits);
 
     for (int i = 0; i < num_bits; i++) {
-        s_bits[i+1] = mpz_tstbit (x, num_bits - 1 - i);
+        run_data.s_bits[i] = mpz_tstbit (x, num_bits - 1 - i);
         if (PRINT_DEBUG)
-            printf("%d => %d\n", i, s_bits[i+1]);
+            printf("%d => %d\n", i, run_data.s_bits[i]);
     }
 
     for(int index=0;index<count;index++) {
@@ -531,8 +542,8 @@ class curve_t {
         mpz_set_str(x, data[4], 10);
         from_mpz(x, instance.bY._limbs, params::BITS/32);
 
-        // d_z (not montgomery) (in colab) | d = (sigma / 2^32) mod N
-        instance.d = atol(data[5]);
+        // d = (sigma / 2^32) mod N BUT 2^32 handled by special_mul_ui32
+        instance.d = sigma + index;
     }
 
     mpz_clear(x);
@@ -548,7 +559,8 @@ class curve_t {
 template<class params>
 __global__ void kernel_double_add(
         cgbn_error_report_t *report,
-        int *s_bits,
+        uint32_t num_bits,
+        char* gpu_s_bits,
         typename curve_t<params>::instance_t *instances,
         uint32_t count) {
   // decode an instance_i number from the blockIdx and threadIdx
@@ -580,15 +592,14 @@ __global__ void kernel_double_add(
    */
 
   // TODO Do the progressive queue thing.
-  for (int b = 1; b <= s_bits[0]; b++) {
+  for (int b = 0; b < num_bits; b++) {
     if (PRINT_DEBUG && instance_j == 0) {
         printf("%d => %d\t|| (%u, %u),  (%u, %u)\n",
-                b-1, s_bits[b],
+                b, gpu_s_bits[b],
                 cgbn_get_ui32(curve._env, aX), cgbn_get_ui32(curve._env, aY),
                 cgbn_get_ui32(curve._env, bX), cgbn_get_ui32(curve._env, bY));
     }
-
-    if (s_bits[b] == 0) {
+    if (gpu_s_bits[b] == 0) {
         curve.double_add_v2(aX, aY, bX, bY, d, b, modulus);
     } else {
         curve.double_add_v2(bX, bY, aX, aY, d, b, modulus);
@@ -605,24 +616,24 @@ template<class params>
 void run_test(uint32_t instance_count) {
   typedef typename curve_t<params>::instance_t instance_t;
 
-  int                 *s_bits = NULL, *gpu_s_bits;
+  metadata_t           run_data;
+  char                *gpu_s_bits;
   instance_t          *instances, *gpu_instances;
   cgbn_error_report_t *report;
   int32_t              TPB=(params::TPB==0) ? 128 : params::TPB;    // default threads per block to 128
   int32_t              TPI=params::TPI, IPB=TPB/TPI;                // IPB is instances per block
 
-  size_t gpu_count = (instance_count+IPB-1)/IPB;
+  size_t gpu_block_count = (instance_count+IPB-1)/IPB;
 
   //printf("Genereating instances ...\n");
-  instances = curve_t<params>::generate_instances(&s_bits, instance_count);
-  assert(s_bits != NULL);
-  assert(s_bits[0] > 0);
+  instances = curve_t<params>::generate_instances(run_data, instance_count);
+  assert(run_data.s_bits != NULL);
 
-  //printf("Copying s_bits and instances to the GPU ...\n");
+  printf("Copying s_bits(%d) and instances(%d) to the GPU ...\n", run_data.num_bits, instance_count);
   CUDA_CHECK(cudaSetDevice(0));
   // Copy s_bits
-  CUDA_CHECK(cudaMalloc((void **)&gpu_s_bits, sizeof(int) * (s_bits[0] + 1)));
-  CUDA_CHECK(cudaMemcpy(gpu_s_bits, s_bits, sizeof(int) * (s_bits[0] + 1), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc((void **)&gpu_s_bits, sizeof(char) * run_data.num_bits));
+  CUDA_CHECK(cudaMemcpy(gpu_s_bits, run_data.s_bits, sizeof(char) * (run_data.num_bits), cudaMemcpyHostToDevice));
   // Copy instances
   CUDA_CHECK(cudaMalloc((void **)&gpu_instances, sizeof(instance_t)*instance_count));
   CUDA_CHECK(cudaMemcpy(gpu_instances, instances, sizeof(instance_t)*instance_count, cudaMemcpyHostToDevice));
@@ -630,10 +641,10 @@ void run_test(uint32_t instance_count) {
   // create a cgbn_error_report for CGBN to report back errors
   CUDA_CHECK(cgbn_error_report_alloc(&report));
 
-  printf("Running GPU kernel<%ld> ...\n", gpu_count);
+  printf("Running GPU kernel<%ld,%d> ...\n", gpu_block_count, TPB);
   auto start_t = std::chrono::high_resolution_clock::now();
-  // launch kernel with blocks=ceil(instance_count/IPB) and threads=TPB
-  kernel_double_add<params><<<gpu_count, TPB>>>(report, gpu_s_bits, gpu_instances, instance_count);
+  kernel_double_add<params><<<gpu_block_count, TPB>>>(
+    report, run_data.num_bits, gpu_s_bits, gpu_instances, instance_count);
 
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
   CUDA_CHECK(cudaDeviceSynchronize());
@@ -646,7 +657,7 @@ void run_test(uint32_t instance_count) {
   auto end_t = std::chrono::high_resolution_clock::now();
   double diff = std::chrono::duration<float>(end_t - start_t).count();
   printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f = %.0f curves/second\n",
-      instance_count, params::BITS, s_bits[0], diff,
+      instance_count, params::BITS, run_data.num_bits, diff,
       instance_count / diff);
 
   mpz_t x, y, n;
@@ -657,12 +668,15 @@ void run_test(uint32_t instance_count) {
     if (index >= 1) break;
     instance_t &instance = instances[index];
 
-    to_mpz(x, instance.aX._limbs, params::BITS/32);
-    to_mpz(y, instance.aY._limbs, params::BITS/32);
-    gmp_printf("pA: (%Zd, %Zd)\n", x, y);
-    to_mpz(x, instance.bX._limbs, params::BITS/32);
-    to_mpz(y, instance.bY._limbs, params::BITS/32);
-    gmp_printf("pB: (%Zd, %Zd)\n", x, y);
+    if (PRINT_DEBUG && index == 0) {
+        to_mpz(x, instance.aX._limbs, params::BITS/32);
+        to_mpz(y, instance.aY._limbs, params::BITS/32);
+        gmp_printf("pA: (%Zd, %Zd)\n", x, y);
+
+        to_mpz(x, instance.bX._limbs, params::BITS/32);
+        to_mpz(y, instance.bY._limbs, params::BITS/32);
+        gmp_printf("pB: (%Zd, %Zd)\n", x, y);
+    }
 
     to_mpz(n, instance.modulus._limbs, params::BITS/32);
     to_mpz(x, instance.aX._limbs, params::BITS/32);
@@ -674,14 +688,14 @@ void run_test(uint32_t instance_count) {
     mpz_mul(x, x, y);         // aX * aY^-1
     mpz_mod(x, x, n);
 
-    gmp_printf("X = %Zd\n", x);
+    gmp_printf("METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X = %Zd\n", instance.d, run_data.B1, x);
   }
   mpz_clear(x);
   mpz_clear(y);
   mpz_clear(n);
 
   // clean up
-  free(s_bits);
+  free(run_data.s_bits);
   free(instances);
   CUDA_CHECK(cudaFree(gpu_s_bits));
   CUDA_CHECK(cudaFree(gpu_instances));
