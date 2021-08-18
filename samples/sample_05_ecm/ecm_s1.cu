@@ -382,25 +382,92 @@ class curve_t {
                 cgbn_get_ui32(_env, v));
   }
 
+  __host__ static void compute_s_bits(mpz_t &s, int B1) {
+      // Doesn't do even half of the smart things that compute_s does
+      const int ACCUM_SIZE = 30;
+      mpz_t prime, ppz, accum[ACCUM_SIZE];
+      mpz_init(prime);
+      mpz_init(ppz);
+      for (int i = 0; i < ACCUM_SIZE; i++) {
+          mpz_init_set_ui(accum[i], 1);
+      }
+
+
+      // Prime, prime power, max prime power;
+      uint32_t p, pp, maxpp;
+      // index
+      int pi = 0;
+
+      for (mpz_set_ui(prime, 2); (p = mpz_get_ui(prime)) <= B1; mpz_nextprime(prime, prime)) {
+        maxpp = B1 / p;
+        pp = p;
+        while (pp <= maxpp) {
+            pp *= p;
+        }
+
+        mpz_set_ui(ppz, pp);
+
+        // Prefix product tree (TODO what is the name here)
+        if ((pi & 1) == 0) {
+            mpz_set(accum[0], ppz);
+        } else {
+            mpz_mul(accum[0], accum[0], ppz);
+        }
+
+        // printf("%d | %d | %d\n", pi, p, pp);
+
+        int j = 0;
+        while ((pi & (1 << j)) != 0) {
+            if ((pi & (1 << j + 1)) == 0) {
+                mpz_swap(accum[j+1], accum[j]);
+            } else {
+                mpz_mul(accum[j+1], accum[j+1], accum[j]);
+            }
+            mpz_set_ui(accum[j], 1);
+            j++;
+        }
+        pi++;
+      }
+
+      // Multiply all accumulators
+      mpz_set_ui(s, 1);
+      for (int i = 0; i < ACCUM_SIZE; i++) {
+        mpz_mul(s, s, accum[i]);
+        mpz_clear(accum[i]);
+      }
+      mpz_clear(prime);
+      mpz_clear(ppz);
+  }
+
   __host__ static instance_t *generate_instances(int **s_bits_ptr, uint32_t count) {
     instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
 
     // XXX: calc d_z from sigma
     // XXX: 2P_y depends on d which depends on bits!
 
-    // N, P1_x, P1_y, 2P_x, 2P_y, "d_z", s
+    // N, P1_x, P1_y, 2P_x, 2P_y, "d_z", B1
     char data[][100] = {
-        // "2147483647", "2", "1", "9", "392", "6", "2"
-        // "2147483647", "2", "1", "9", "392", "6", "2520"
-        "2147483647", "2", "1", "9", "392", "6", "69720375229712477164533808935312303556800"
+        // "2147483647", "2", "1", "9", "392", "6", "1"
+        // "2147483647", "2", "1", "9", "392", "6", "10"
+         "2147483647", "2", "1", "9", "392", "6", "1000"
+        // "2147483647", "2", "1", "9", "392", "6", "20000"
     };
 
     mpz_t x;
     mpz_init(x);
 
-    // s / s_bits
-    mpz_set_str(x, data[6], 10);
+    // B1 => s / s_bits
+    uint64_t B1 = atol(data[6]);
+    assert( 1 <= B1 && B1 <= 11000000 );
+
+    compute_s_bits(x, B1);
     uint32_t num_bits = mpz_sizeinbase(x, 2) - 1;
+    printf("s (%d bits)", num_bits);
+    if (num_bits < 200) {
+        gmp_printf(": %Zd", x);
+    }
+    printf("\n");
+
     assert( num_bits <= 65'535 );
     // Use int* so that size can be stored in first element, could pass around extra size.
     int* s_bits = *s_bits_ptr = (int*) malloc(sizeof(int) * (num_bits + 1));
@@ -574,7 +641,7 @@ void run_test(uint32_t instance_count) {
     mpz_mul(x, x, y);         // aX * aY^-1
     mpz_mod(x, x, n);
 
-    gmp_printf("X= %Zd\n", x);
+    gmp_printf("X = %Zd\n", x);
   }
   mpz_clear(x);
   mpz_clear(y);
