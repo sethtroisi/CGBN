@@ -51,6 +51,12 @@ IN THE SOFTWARE.
 // See cgbn_error_t enum (cgbn.h:39)
 #define cgbn_normalized_error ((cgbn_error_t) 14)
 
+#define PRINT_DEBUG false
+
+// Seems to adds very small overhead
+#define VERIFY_NORMALIZED true
+
+
 template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
 class ecm_params_t {
   public:
@@ -66,6 +72,7 @@ class ecm_params_t {
   static const uint32_t WINDOW_BITS=window_bits;   // window size
 };
 
+
 template<class params>
 class curve_t {
   public:
@@ -79,10 +86,8 @@ class curve_t {
     cgbn_mem_t<params::BITS> bY;
     cgbn_mem_t<params::BITS> modulus;
     uint32_t d;
-
-    uint32_t num_bits;
-    char s_bits[64]; // TODO dynamically copy this
   } instance_t;
+
 
   typedef cgbn_context_t<params::TPI, params>   context_t;
   typedef cgbn_env_t<context_t, params::BITS>   env_t;
@@ -180,7 +185,7 @@ class curve_t {
 
   // Verify 0 <= r < modulus
   __device__ __forceinline__ void assert_normalized(bn_t &r, const bn_t &modulus) {
-    if (_context.check_errors()) {
+    if (VERIFY_NORMALIZED && _context.check_errors()) {
 
         // Negative overflow
         if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
@@ -244,7 +249,7 @@ class curve_t {
     bn_t t, t2;
     // find np0 correctly
     uint32_t np0 = cgbn_bn2mont(_env, t, q, modulus);
-    if (thread_i == 0) {
+    if (PRINT_DEBUG && thread_i == 0) {
         printf("\tv2 %d,%d | np0 %d\n", _instance, bit, np0);
         printf("\t\tin\t(%d, %d),  (%d, %d)\n",
                 cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
@@ -256,16 +261,16 @@ class curve_t {
     cgbn_bn2mont(_env, u, u, modulus);
     cgbn_bn2mont(_env, w, w, modulus);
     cgbn_bn2mont(_env, v, v, modulus);
-    { // TODO: move behind a flag
+    {
         assert_normalized(q, modulus);
         assert_normalized(u, modulus);
         assert_normalized(w, modulus);
         assert_normalized(v, modulus);
-        if (thread_i == 0)
-            printf("\t\t0\t(%d, %d),  (%d, %d)\n",
-                    cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
-                    cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
     }
+    if (PRINT_DEBUG && thread_i == 0)
+        printf("\t\t0\t(%d, %d),  (%d, %d)\n",
+                cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
+                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
 
     cgbn_add(_env, t, v, w); // t = (bY + bX)
     normalize_addition(t, modulus);
@@ -280,11 +285,11 @@ class curve_t {
         assert_normalized(v, modulus);
         assert_normalized(w, modulus);
         assert_normalized(u, modulus);
-        if (thread_i == 0)
-            printf("\t\t1\t(%d, %d),  (%d, %d)\n",
-                    cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
-                    cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
     }
+    if (PRINT_DEBUG && thread_i == 0)
+        printf("\t\t1\t(%d, %d),  (%d, %d)\n",
+                cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
+                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
     cgbn_mont_mul(_env, t, t, u, modulus, np0); // C*B
     cgbn_mont_mul(_env, v, v, w, modulus, np0); // D*A
@@ -296,11 +301,11 @@ class curve_t {
         assert_normalized(v, modulus);
         assert_normalized(w, modulus);
         assert_normalized(u, modulus);
-        if (thread_i == 0)
-            printf("\t\t2\t(%d, %d),  (%d, %d)\n",
-                    cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
-                    cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
     }
+    if (PRINT_DEBUG && thread_i == 0)
+        printf("\t\t2\t(%d, %d),  (%d, %d)\n",
+                cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
+                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
     // q = aX is finalized
     cgbn_mont_mul(_env, q, u, w, modulus, np0); // AA*BB
@@ -326,14 +331,14 @@ class curve_t {
         assert_normalized(w, modulus);
         assert_normalized(t2, modulus);
         assert_normalized(u, modulus);
-        if (thread_i == 0)
-            printf("\t\t3\tdecimal %d, d = %d | K = %d,  dK = %d,  BB + dk = %d\n",
-                    cgbn_get_ui32(_env, q),
-                    d,
-                    cgbn_get_ui32(_env, w),
-                    cgbn_get_ui32(_env, t2),
-                    cgbn_get_ui32(_env, u));
     }
+    if (PRINT_DEBUG && thread_i == 0)
+        printf("\t\t3\tdecimal %d, d = %d | K = %d,  dK = %d,  BB + dk = %d\n",
+                cgbn_get_ui32(_env, q),
+                d,
+                cgbn_get_ui32(_env, w),
+                cgbn_get_ui32(_env, t2),
+                cgbn_get_ui32(_env, u));
 
     // u = aY is finalized
     cgbn_mont_mul(_env, u, w, u, modulus, np0); // K(BB+dK)
@@ -348,12 +353,12 @@ class curve_t {
     {
         assert_normalized(w, modulus);
         assert_normalized(v, modulus);
-        if (thread_i == 0)
+    }
+        if (PRINT_DEBUG && thread_i == 0)
             printf("\t\t4\tdecimal %d | %d, %d\n",
                     cgbn_get_ui32(_env, u),
                     cgbn_get_ui32(_env, w),
                     cgbn_get_ui32(_env, v));
-    }
 
     // w = bX is finalized
     cgbn_mont_sqr(_env, w, w, modulus, np0); // (DA+CB)^2 mod N
@@ -371,29 +376,44 @@ class curve_t {
     cgbn_mont2bn(_env, v, v, modulus, np0);
         assert_normalized(v, modulus);
 
-    if (thread_i == 0)
+    if (PRINT_DEBUG && thread_i == 0)
         printf("\t\t5\tdecimal %d %d\n",
                 cgbn_get_ui32(_env, w),
                 cgbn_get_ui32(_env, v));
   }
 
-  __host__ static instance_t *generate_instances(uint32_t count) {
+  __host__ static instance_t *generate_instances(int **s_bits_ptr, uint32_t count) {
     instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
+
+    // XXX: calc d_z from sigma
+    // XXX: 2P_y depends on d which depends on bits!
+
+    // N, P1_x, P1_y, 2P_x, 2P_y, "d_z", s
+    char data[][100] = {
+        // "2147483647", "2", "1", "9", "392", "6", "2"
+        // "2147483647", "2", "1", "9", "392", "6", "2520"
+        "2147483647", "2", "1", "9", "392", "6", "69720375229712477164533808935312303556800"
+    };
 
     mpz_t x;
     mpz_init(x);
 
+    // s / s_bits
+    mpz_set_str(x, data[6], 10);
+    uint32_t num_bits = mpz_sizeinbase(x, 2) - 1;
+    assert( num_bits <= 65'535 );
+    // Use int* so that size can be stored in first element, could pass around extra size.
+    int* s_bits = *s_bits_ptr = (int*) malloc(sizeof(int) * (num_bits + 1));
+    s_bits[0] = num_bits;
+
+    for (int i = 0; i < num_bits; i++) {
+        s_bits[i+1] = mpz_tstbit (x, num_bits - 1 - i);
+        if (PRINT_DEBUG)
+            printf("%d => %d\n", i, s_bits[i+1]);
+    }
+
     for(int index=0;index<count;index++) {
         instance_t &instance = instances[index];
-
-        // XXX: calc d_z from sigma
-        // XXX: 2P_y depends on d which depends on bits!
-
-        // N, P1_x, P1_y, 2P_x, 2P_y, "d_z", s
-        char data[][100] = {
-            // "2147483647", "2", "1", "9", "392", "6", "2"
-            "2147483647", "2", "1", "9", "392", "6", "2520"
-        };
 
         // N
         mpz_set_str(x, data[0], 10);
@@ -413,21 +433,6 @@ class curve_t {
 
         // d_z (not montgomery) (in colab) | d = (sigma / 2^32) mod N
         instance.d = atol(data[5]);
-
-        // s
-        mpz_set_str(x, data[6], 10);
-        instance.num_bits = mpz_sizeinbase(x, 2) - 1;
-        assert( instance.num_bits <= 100 );
-        for (int i = 0; i < instance.num_bits; i++) {
-            instance.s_bits[i] = mpz_tstbit (x, instance.num_bits - 1 - i);
-            if (index == 0) {
-             //   printf("%d => %d\n", i, instance.s_bits[i]);
-            }
-        }
-
-        //instance.num_bits = 1;
-
-        //instance.num_bits = 14434;
     }
 
     mpz_clear(x);
@@ -441,7 +446,11 @@ class curve_t {
 // Unfortunately, the kernel must be separate from the curve_t class
 
 template<class params>
-__global__ void kernel_double_add(cgbn_error_report_t *report, typename curve_t<params>::instance_t *instances, uint32_t count) {
+__global__ void kernel_double_add(
+        cgbn_error_report_t *report,
+        int *s_bits,
+        typename curve_t<params>::instance_t *instances,
+        uint32_t count) {
   // decode an instance_i number from the blockIdx and threadIdx
   int32_t instance_i=(blockIdx.x*blockDim.x + threadIdx.x)/params::TPI;
   int32_t instance_j=(blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
@@ -471,17 +480,15 @@ __global__ void kernel_double_add(cgbn_error_report_t *report, typename curve_t<
    */
 
   // TODO Do the progressive queue thing.
-  for (int b = 0; b < instance.num_bits; b++) {
-    //if (instance_j == 0) printf("%d => %d\n", b, instance.s_bits[b]);
-    if (instance_j == 0) {
+  for (int b = 1; b <= s_bits[0]; b++) {
+    if (PRINT_DEBUG && instance_j == 0) {
         printf("%d => %d\t|| (%d, %d),  (%d, %d)\n",
-                b, instance.s_bits[b],
+                b-1, s_bits[b],
                 cgbn_get_ui32(curve._env, aX), cgbn_get_ui32(curve._env, aY),
                 cgbn_get_ui32(curve._env, bX), cgbn_get_ui32(curve._env, bY));
     }
 
-
-    if (instance.s_bits[b & 63] == 0) { // TODO cleanup in real code
+    if (s_bits[b] == 0) {
         curve.double_add_v2(aX, aY, bX, bY, d, b, modulus);
     } else {
         curve.double_add_v2(bX, bY, aX, aY, d, b, modulus);
@@ -498,7 +505,8 @@ template<class params>
 void run_test(uint32_t instance_count) {
   typedef typename curve_t<params>::instance_t instance_t;
 
-  instance_t          *instances, *gpuInstances;
+  int                 *s_bits = NULL, *gpu_s_bits;
+  instance_t          *instances, *gpu_instances;
   cgbn_error_report_t *report;
   int32_t              TPB=(params::TPB==0) ? 128 : params::TPB;    // default threads per block to 128
   int32_t              TPI=params::TPI, IPB=TPB/TPI;                // IPB is instances per block
@@ -506,37 +514,40 @@ void run_test(uint32_t instance_count) {
   size_t gpu_count = (instance_count+IPB-1)/IPB;
 
   //printf("Genereating instances ...\n");
-  instances = curve_t<params>::generate_instances(instance_count);
+  instances = curve_t<params>::generate_instances(&s_bits, instance_count);
+  assert(s_bits != NULL);
+  assert(s_bits[0] > 0);
 
-  //printf("Copying instances to the GPU ...\n");
+  //printf("Copying s_bits and instances to the GPU ...\n");
   CUDA_CHECK(cudaSetDevice(0));
-  CUDA_CHECK(cudaMalloc((void **)&gpuInstances, sizeof(instance_t)*instance_count));
-  CUDA_CHECK(cudaMemcpy(gpuInstances, instances, sizeof(instance_t)*instance_count, cudaMemcpyHostToDevice));
+  // Copy s_bits
+  CUDA_CHECK(cudaMalloc((void **)&gpu_s_bits, sizeof(int) * (s_bits[0] + 1)));
+  CUDA_CHECK(cudaMemcpy(gpu_s_bits, s_bits, sizeof(int) * (s_bits[0] + 1), cudaMemcpyHostToDevice));
+  // Copy instances
+  CUDA_CHECK(cudaMalloc((void **)&gpu_instances, sizeof(instance_t)*instance_count));
+  CUDA_CHECK(cudaMemcpy(gpu_instances, instances, sizeof(instance_t)*instance_count, cudaMemcpyHostToDevice));
 
   // create a cgbn_error_report for CGBN to report back errors
   CUDA_CHECK(cgbn_error_report_alloc(&report));
 
   printf("Running GPU kernel<%ld> ...\n", gpu_count);
-
   auto start_t = std::chrono::high_resolution_clock::now();
-
   // launch kernel with blocks=ceil(instance_count/IPB) and threads=TPB
-  kernel_double_add<params><<<gpu_count, TPB>>>(report, gpuInstances, instance_count);
+  kernel_double_add<params><<<gpu_count, TPB>>>(report, gpu_s_bits, gpu_instances, instance_count);
 
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
   CUDA_CHECK(cudaDeviceSynchronize());
   CGBN_CHECK(report);
 
-  // copy the instances back from gpuMemory
+  // Copy the instances back from gpuMemory
   //printf("Copying results back to CPU ...\n");
-  CUDA_CHECK(cudaMemcpy(instances, gpuInstances, sizeof(instance_t)*instance_count, cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(instances, gpu_instances, sizeof(instance_t)*instance_count, cudaMemcpyDeviceToHost));
 
   auto end_t = std::chrono::high_resolution_clock::now();
   double diff = std::chrono::duration<float>(end_t - start_t).count();
   printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f = %.0f curves/second\n",
-      instance_count, params::BITS, instances[0].num_bits, diff,
+      instance_count, params::BITS, s_bits[0], diff,
       instance_count / diff);
-
 
   mpz_t x, y, n;
   mpz_init(x);
@@ -570,8 +581,10 @@ void run_test(uint32_t instance_count) {
   mpz_clear(n);
 
   // clean up
+  free(s_bits);
   free(instances);
-  CUDA_CHECK(cudaFree(gpuInstances));
+  CUDA_CHECK(cudaFree(gpu_s_bits));
+  CUDA_CHECK(cudaFree(gpu_instances));
   CUDA_CHECK(cgbn_error_report_free(report));
 }
 
