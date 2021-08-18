@@ -51,14 +51,13 @@ IN THE SOFTWARE.
 // See cgbn_error_t enum (cgbn.h:39)
 #define cgbn_normalized_error ((cgbn_error_t) 14)
 
-#define PRINT_DEBUG 0
+#define PRINT_DEBUG 1
 
 // Seems to adds very small overhead
 #define VERIFY_NORMALIZED 1
 
 // Dramatically increases compile time
-#define FORCE_INLINE
-//__forceinline__
+#define FORCE_INLINE __forceinline__
 
 
 template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
@@ -238,9 +237,11 @@ class curve_t {
     uint32_t q = t1_0 * np0;
     uint32_t carry_t2 = cgbn_mul_ui32(_env, temp, modulus, q);
 
-    // Should add back carry_t1, carry_t2 to the top of r, temp
     cgbn_shift_right(_env, r, r, 32);
     cgbn_shift_right(_env, temp, temp, 32);
+    // Add back carry
+    cgbn_insert_bits_ui32(_env, r, r, params::BITS-32, 32, carry_t1);
+    cgbn_insert_bits_ui32(_env, temp, temp, params::BITS-32, 32, carry_t2);
 
     int32_t carry_q = cgbn_add(_env, r, r, temp);
     carry_q += cgbn_add_ui32(_env, r, r, t1_0 != 0);
@@ -301,6 +302,7 @@ class curve_t {
                 cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
 
+    // TODO use carry results to normalize
     cgbn_add(_env, t, v, w); // t = (bY + bX)
     normalize_addition(t, modulus);
     cgbn_sub(_env, v, v, w); // v = (bY - bX)
@@ -320,6 +322,22 @@ class curve_t {
                 cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
+    cgbn_set(_env, q, modulus);
+    cgbn_set_ui32(_env, u, 0);
+    cgbn_set_ui32(_env, w, 0);
+    cgbn_set_ui32(_env, v, 0);
+    //cgbn_set(_env, v, u);
+    //cgbn_set(_env, v, modulus);
+
+    //cgbn_set_ui64(_env, v, v, 9,007,199,254,740,992); 1 << 53
+    cgbn_set_ui32(_env, w, 1);
+    cgbn_shift_left(_env, w, w, 53);
+    cgbn_sub(_env, w, modulus, w);
+
+    // This doesn't mod correctly here, but does in sample_01_add with same data
+    cgbn_mont_sqr(_env, v, w, modulus, np0);    // BB
+    return;
+
     cgbn_mont_mul(_env, t, t, u, modulus, np0); // C*B
     cgbn_mont_mul(_env, v, v, w, modulus, np0); // D*A
     // TODO check if using temporary is faster?
@@ -329,7 +347,7 @@ class curve_t {
         assert_normalized(t, modulus);
         assert_normalized(v, modulus);
         assert_normalized(w, modulus);
-        assert_normalized(u, modulus);
+    //    assert_normalized(u, modulus);
     }
     if (PRINT_DEBUG && thread_i == 0)
         printf("\t\t2\t(%u, %u),  (%u, %u)\n",
@@ -492,7 +510,7 @@ class curve_t {
        "356884058034667935071534999555976134431502448398254670173385246235825757718497049650840"
        "395479077524141551693709646313532109100458930777369869799339464574710187913001707390369"
        "746244738360231456848857406987764344929456259689650691221157703745683677939922890825308"
-       "9945390777036837155241992", "10000" // X = 192674 ... 701818
+       "9945390777036837155241992", "2" // X(10000) = 192674 ... 701818
        // */
     };
 
@@ -703,7 +721,7 @@ void run_test(uint32_t instance_count) {
 }
 
 int main() {
-  typedef ecm_params_t<8, 2048, 5> params;
+  typedef ecm_params_t<8, 1024, 5> params;
 
   run_test<params>(1);
   /*
