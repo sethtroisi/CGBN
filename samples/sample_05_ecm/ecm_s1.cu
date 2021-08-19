@@ -368,7 +368,8 @@ class curve_t {
         exit(1);
     }
 
-    if (run_data.n_log2 + 32 > params::BITS) {
+    if (run_data.n_log2 + 16 > params::BITS) {
+        printf("N(%d bits)+carry ~ BITS %d\n", run_data.n_log2, params::BITS);
         printf("being caution, feel free to disable this check\n");
         printf("if you do disable, probably should verify a result against gmp-ecm\n");
         exit(1);
@@ -489,17 +490,11 @@ __global__ void kernel_double_add(
       }
   }
 
-  unsigned int bmod = 100000000;
-
   for (int b = num_bits; b > 0; b--) {
-    if (instance_i == 0 && instance_j == 0) {
-      if (b < 100000000) bmod = 10000000;
-      if (b < 10000000)  bmod =  1000000;
-      if (b < 1000000)   bmod =   100000;
-      if (b < 100000)    bmod =    10000;
-      if (b % bmod == 0)
-        printf("%d iterations to go\n", b);
-    }
+    /**
+     * TODO generates a lot of duplicate inlined code, not sure how to improve
+     * Tried with swappings pointers (with a single call to double_add_v2)
+     */
     if (gpu_s_bits[num_bits - b] == 0) {
         curve.double_add_v2(aX, aY, bX, bY, instance.d, b, modulus, np0);
     } else {
@@ -569,7 +564,7 @@ void run_test(metadata_t &run_data) {
   CGBN_CHECK(report);
 
   // Copy the instances back from gpuMemory
-  //printf("Copying results back to CPU ...\n");
+  printf("Copying results back to CPU ...\n");
   CUDA_CHECK(cudaMemcpy(instances, gpu_instances, instance_size, cudaMemcpyDeviceToHost));
 
   auto end_t = std::chrono::high_resolution_clock::now();
@@ -615,7 +610,7 @@ void run_test(metadata_t &run_data) {
     mpz_mod(x, x, n);
 
     if (no_factor) {
-        gmp_fprintf(run_data.file, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=0x%Zx; X=0x%Zx;\n",
+        gmp_fprintf(run_data.file, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=%Zd; X=0x%Zx;\n",
             instance.d, run_data.B1, n, x);
     }
   }
@@ -650,7 +645,7 @@ int main(int argc, char** argv) {
    * TPI=16 is required for N > 2048
    * TPI=32 is required for N > 8192
    */
-  typedef ecm_params_t<8, 512> params;
+  typedef ecm_params_t<8, 1024> params;
 
   // Reduces cpu usage from 100% at small cost to latency.
   CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync));
