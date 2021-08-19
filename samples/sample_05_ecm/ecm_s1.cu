@@ -60,9 +60,12 @@ IN THE SOFTWARE.
 // Adds even less overhead (<1%)
 #define CHECK_ERROR 1
 
-// Dramatically increases compile time
-#define FORCE_INLINE __forceinline__
-
+// Can dramatically change compile time
+#if 1
+    #define FORCE_INLINE __forceinline__
+#else
+    #define FORCE_INLINE
+#endif
 
 template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
 class ecm_params_t {
@@ -129,7 +132,8 @@ class curve_t {
 
   // Verify 0 <= r < modulus
   __device__ FORCE_INLINE void assert_normalized(bn_t &r, const bn_t &modulus) {
-    if (VERIFY_NORMALIZED && _context.check_errors()) {
+    //if (VERIFY_NORMALIZED && _context.check_errors()) {
+    if (VERIFY_NORMALIZED && CHECK_ERROR) {
 
         // Negative overflow
         if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
@@ -180,14 +184,13 @@ class curve_t {
 
     // This needs to be measured at block containing top bit of modulus
     int32_t carry_q = cgbn_add(_env, r, r, temp);
-    carry_q += cgbn_add_ui32(_env, r, r, t1_0 != 0);
-    //while (carry_q != 0) {
-    //    carry_q -= cgbn_sub(_env, r, r, modulus);
-    //}
+    carry_q += cgbn_add_ui32(_env, r, r, t1_0 != 0); // add 1
+    while (carry_q != 0) {
+        carry_q -= cgbn_sub(_env, r, r, modulus);
+    }
 
-    // TODO can this be more elegant?
-    // Show be 1 or 2, never more
-    while (cgbn_compare(_env, r, modulus) >= 0) {
+    // 0 <= r, temp < modulus => r + temp + 1 < 2*modulus
+    if (cgbn_compare(_env, r, modulus) >= 0) {
         cgbn_sub(_env, r, r, modulus);
     }
   }
@@ -200,29 +203,13 @@ class curve_t {
           uint32_t bit_number,
           const bn_t &modulus,
           const uint32_t np0) {
-
-    uint32_t thread_i = (blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
-
     // q = xA = aX
     // u = zA = aY
     // w = xB = bX
     // v = zB = bY
 
-    //cgbn_set_ui32(_env, q, 0);
-    //cgbn_set_ui32(_env, u, 0);
-    //cgbn_set_ui32(_env, w, 0);
-    //cgbn_set_ui32(_env, v, 0);
-
-    // t2 is only needed once (BB + dK), see if it can be optimized around
-    // t3 is only used once (special_mult_ui32)
+    // Doesn't seem to be a large cost to using many extra variables
     bn_t t, t2, t3;
-    // find np0 correctly
-    if (PRINT_DEBUG && thread_i == 0) {
-        printf("\tv2 %d,%d | np0 %u\n", _instance, bit_number, np0);
-        printf("\t\tin\t(%u, %u),  (%u, %u)\n",
-                cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
-                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
-    }
 
     cgbn_add(_env, t, v, w); // t = (bY + bX)
     normalize_addition(t, modulus);
@@ -240,10 +227,6 @@ class curve_t {
         assert_normalized(w, modulus);
         assert_normalized(u, modulus);
     }
-    if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t1\t(%u, %u),  (%u, %u)\n",
-                cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
-                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
     cgbn_mont_mul(_env, t, t, u, modulus, np0); // C*B
         normalize_addition(t, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
@@ -260,10 +243,6 @@ class curve_t {
         assert_normalized(w, modulus);
         assert_normalized(u, modulus);
     }
-    if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t2\t(%u, %u),  (%u, %u)\n",
-                cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
-                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
     // q = aX is finalized
     cgbn_mont_mul(_env, q, u, w, modulus, np0); // AA*BB
@@ -287,13 +266,6 @@ class curve_t {
         assert_normalized(t2, modulus);
         assert_normalized(u, modulus);
     }
-    if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t3\tdecimal %u, d = %u | K = %u,  dK = %u,  BB + dk = %u\n",
-                cgbn_get_ui32(_env, q),
-                d,
-                cgbn_get_ui32(_env, w),
-                cgbn_get_ui32(_env, t2),
-                cgbn_get_ui32(_env, u));
 
     // u = aY is finalized
     cgbn_mont_mul(_env, u, w, u, modulus, np0); // K(BB+dK)
@@ -308,11 +280,6 @@ class curve_t {
         assert_normalized(w, modulus);
         assert_normalized(v, modulus);
     }
-        if (PRINT_DEBUG && thread_i == 0)
-            printf("\t\t4\tdecimal %u | %u, %u\n",
-                    cgbn_get_ui32(_env, u),
-                    cgbn_get_ui32(_env, w),
-                    cgbn_get_ui32(_env, v));
 
     // w = bX is finalized
     cgbn_mont_sqr(_env, w, w, modulus, np0); // (DA+CB)^2 mod N
@@ -327,11 +294,6 @@ class curve_t {
     cgbn_add(_env, v, v, v); // double
     normalize_addition(v, modulus);
         assert_normalized(v, modulus);
-
-    if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t5\tdecimal %u %u\n",
-                cgbn_get_ui32(_env, w),
-                cgbn_get_ui32(_env, v));
   }
 
   __host__ static void compute_s_bits(mpz_t &s, int B1) {
