@@ -129,10 +129,9 @@ class curve_t {
   __device__ FORCE_INLINE curve_t(cgbn_monitor_t monitor, cgbn_error_report_t *report, int32_t instance) :
       _context(monitor, report, (uint32_t)instance), _env(_context), _instance(instance) {}
 
-
   // Verify 0 <= r < modulus
   __device__ FORCE_INLINE void assert_normalized(bn_t &r, const bn_t &modulus) {
-    //if (VERIFY_NORMALIZED && _context.check_errors()) {
+    //if (VERIFY_NORMALIZED && _context.check_errors())
     if (VERIFY_NORMALIZED && CHECK_ERROR) {
 
         // Negative overflow
@@ -284,11 +283,11 @@ class curve_t {
 
     // w = bX is finalized
     cgbn_mont_sqr(_env, w, w, modulus, np0); // (DA+CB)^2 mod N
-        normalize_addition(w, modulus); // TODO issue 15
+        normalize_addition(w, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(w, modulus);
 
     cgbn_mont_sqr(_env, v, v, modulus, np0); // (DA-CB)^2 mod N
-        normalize_addition(v, modulus); // TODO issue 15
+        normalize_addition(v, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(v, modulus);
 
     // v = bY is finalized
@@ -363,11 +362,15 @@ class curve_t {
     // N
     mpz_set_str(n, run_data.n, 10);
     run_data.n_log2 = mpz_sizeinbase(n, 2);
+    if (run_data.n_log2 + 2 >= params::BITS) {
+        printf("N(%d bits)+carry >= BITS %d\n", run_data.n_log2, params::BITS);
+        mpz_clear(n);
+        exit(1);
+    }
+
     if (run_data.n_log2 + 32 > params::BITS) {
-        printf("N %d bits is to near BITS %d\n", run_data.n_log2, params::BITS);
         printf("being caution, feel free to disable this check\n");
         printf("if you do disable, probably should verify a result against gmp-ecm\n");
-        mpz_clear(n);
         exit(1);
     }
 
@@ -441,9 +444,6 @@ class curve_t {
 };
 
 // kernel implementation using cgbn
-//
-// Unfortunately, the kernel must be separate from the curve_t class
-
 template<class params>
 __global__ void kernel_double_add(
         cgbn_error_report_t *report,
@@ -451,13 +451,15 @@ __global__ void kernel_double_add(
         char* gpu_s_bits,
         typename curve_t<params>::instance_t *instances,
         uint32_t count) {
+  // TODO add cudaEvent start, stop for event timing
+
+
   // decode an instance_i number from the blockIdx and threadIdx
   int32_t instance_i=(blockIdx.x*blockDim.x + threadIdx.x)/params::TPI;
   int32_t instance_j=(blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
+  if (instance_j == -123) return;   // avoid unused warning
   if(instance_i >= count)
     return;
-
-  if (instance_j == -123) return;   // avoid unused warning
 
   cgbn_monitor_t monitor = CHECK_ERROR ? cgbn_report_monitor : cgbn_no_checks;
 
@@ -465,52 +467,47 @@ __global__ void kernel_double_add(
   typename curve_t<params>::bn_t  aX, aY, bX, bY, modulus;
   typename curve_t<params>::instance_t &instance = instances[instance_i];
 
-  // the loads and stores can go in the class, but it seems more natural to have them
-  // here and to pass in and out bignums
-  cgbn_load(curve._env, aX, &(instance.aX));
-  cgbn_load(curve._env, aY, &(instance.aY));
-  cgbn_load(curve._env, bX, &(instance.bX));
-  cgbn_load(curve._env, bY, &(instance.bY));
-  cgbn_load(curve._env, modulus, &(instance.modulus));
-
-  uint32_t d = instance.d;
-
-  /**
-   * compute S!(P) using repeated double and add
-   * https://en.wikipedia.org/wiki/Elliptic_curve_point_multiplication#Point_doubling
-   */
-
   uint32_t np0;
-  {
-    // Convert everything to mont
-    np0 = cgbn_bn2mont(curve._env, aX, aX, modulus);
-    cgbn_bn2mont(curve._env, aY, aY, modulus);
-    cgbn_bn2mont(curve._env, bX, bX, modulus);
-    cgbn_bn2mont(curve._env, bY, bY, modulus);
-    {
-      curve.assert_normalized(aX, modulus);
-      curve.assert_normalized(aY, modulus);
-      curve.assert_normalized(bX, modulus);
-      curve.assert_normalized(bY, modulus);
-    }
+  { // Setup
+      cgbn_load(curve._env, aX, &(instance.aX));
+      cgbn_load(curve._env, aY, &(instance.aY));
+      cgbn_load(curve._env, bX, &(instance.bX));
+      cgbn_load(curve._env, bY, &(instance.bY));
+      cgbn_load(curve._env, modulus, &(instance.modulus));
+
+      // Convert everything to mont
+      np0 = cgbn_bn2mont(curve._env, aX, aX, modulus);
+      cgbn_bn2mont(curve._env, aY, aY, modulus);
+      cgbn_bn2mont(curve._env, bX, bX, modulus);
+      cgbn_bn2mont(curve._env, bY, bY, modulus);
+
+      {
+        curve.assert_normalized(aX, modulus);
+        curve.assert_normalized(aY, modulus);
+        curve.assert_normalized(bX, modulus);
+        curve.assert_normalized(bY, modulus);
+      }
   }
 
-  // TODO Do the progressive queue thing.
-  for (int b = 0; b < num_bits; b++) {
-    if (PRINT_DEBUG && instance_j == 0) {
-        printf("%d => %d\t|| (%u, %u),  (%u, %u)\n",
-                b, gpu_s_bits[b],
-                cgbn_get_ui32(curve._env, aX), cgbn_get_ui32(curve._env, aY),
-                cgbn_get_ui32(curve._env, bX), cgbn_get_ui32(curve._env, bY));
+  unsigned int bmod = 100000000;
+
+  for (int b = num_bits; b > 0; b--) {
+    if (instance_i == 0 && instance_j == 0) {
+      if (b < 100000000) bmod = 10000000;
+      if (b < 10000000)  bmod =  1000000;
+      if (b < 1000000)   bmod =   100000;
+      if (b < 100000)    bmod =    10000;
+      if (b % bmod == 0)
+        printf("%d iterations to go\n", b);
     }
-    if (gpu_s_bits[b] == 0) {
-        curve.double_add_v2(aX, aY, bX, bY, d, b, modulus, np0);
+    if (gpu_s_bits[num_bits - b] == 0) {
+        curve.double_add_v2(aX, aY, bX, bY, instance.d, b, modulus, np0);
     } else {
-        curve.double_add_v2(bX, bY, aX, aY, d, b, modulus, np0);
+        curve.double_add_v2(bX, bY, aX, aY, instance.d, b, modulus, np0);
     }
   }
 
-  {
+  { // Final output
     // Convert everything back to bn
     cgbn_mont2bn(curve._env, aX, aX, modulus, np0);
     cgbn_mont2bn(curve._env, aY, aY, modulus, np0);
@@ -522,11 +519,11 @@ __global__ void kernel_double_add(
       curve.assert_normalized(bX, modulus);
       curve.assert_normalized(bY, modulus);
     }
+    cgbn_store(curve._env, &(instance.aX), aX);
+    cgbn_store(curve._env, &(instance.aY), aY);
+    cgbn_store(curve._env, &(instance.bX), bX);
+    cgbn_store(curve._env, &(instance.bY), bY);
   }
-  cgbn_store(curve._env, &(instance.aX), aX);
-  cgbn_store(curve._env, &(instance.aY), aY);
-  cgbn_store(curve._env, &(instance.bX), bX);
-  cgbn_store(curve._env, &(instance.bY), bY);
 }
 
 template<class params>
@@ -646,8 +643,17 @@ int main(int argc, char** argv) {
       exit(1);
   }
 
-  // TPI=8 is fastest, TPI=32 if only want to run a single curve
+  /**
+   * Smaller TPI (e.g. 8) is faster (TPI=4 seems worse than TPI=8).
+   * Larger TPI (e.g. 32) for running a single curve (or large N).
+   * TPI=8  is required for N > 512
+   * TPI=16 is required for N > 2048
+   * TPI=32 is required for N > 8192
+   */
   typedef ecm_params_t<8, 512> params;
+
+  // Reduces cpu usage from 100% at small cost to latency.
+  CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync));
 
   metadata_t run_data;
   run_data.sigma = atol(argv[1]);
