@@ -185,7 +185,8 @@ class curve_t {
           bn_t &w, bn_t &v,
           uint32_t d,
           uint32_t bit_number,
-          const bn_t &modulus) {
+          const bn_t &modulus,
+          const uint32_t np0) {
 
     uint32_t thread_i = (blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
 
@@ -203,7 +204,6 @@ class curve_t {
     // t3 is only used once (special_mult_ui32)
     bn_t t, t2, t3;
     // find np0 correctly
-    uint32_t np0 = cgbn_bn2mont(_env, t, q, modulus);
     if (PRINT_DEBUG && thread_i == 0) {
         printf("\tv2 %d,%d | np0 %u\n", _instance, bit_number, np0);
         printf("\t\tin\t(%u, %u),  (%u, %u)\n",
@@ -211,21 +211,6 @@ class curve_t {
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
     }
 
-    // Convert everything to mont
-    cgbn_bn2mont(_env, q, q, modulus);
-    cgbn_bn2mont(_env, u, u, modulus);
-    cgbn_bn2mont(_env, w, w, modulus);
-    cgbn_bn2mont(_env, v, v, modulus);
-    {
-        assert_normalized(q, modulus);
-        assert_normalized(u, modulus);
-        assert_normalized(w, modulus);
-        assert_normalized(v, modulus);
-    }
-    if (PRINT_DEBUG && thread_i == 0)
-        printf("\t\t0\t(%u, %u),  (%u, %u)\n",
-                cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
-                cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
 
     // TODO use carry results to normalize
     cgbn_add(_env, t, v, w); // t = (bY + bX)
@@ -274,8 +259,6 @@ class curve_t {
     cgbn_mont_mul(_env, q, u, w, modulus, np0); // AA*BB
         normalize_addition(q, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(q, modulus);
-    cgbn_mont2bn(_env, q, q, modulus, np0);
-        assert_normalized(q, modulus);
 
     cgbn_sub(_env, w, w, u); // K = AA-BB
     normalize_subtraction(w, modulus);
@@ -306,8 +289,6 @@ class curve_t {
     cgbn_mont_mul(_env, u, w, u, modulus, np0); // K(BB+dK)
         normalize_addition(u, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(u, modulus);
-    cgbn_mont2bn(_env, u, u, modulus, np0);
-        assert_normalized(u, modulus);
 
     cgbn_add(_env, w, v, t); // DA + CB
     normalize_addition(w, modulus);
@@ -327,8 +308,6 @@ class curve_t {
     cgbn_mont_sqr(_env, w, w, modulus, np0); // (DA+CB)^2 mod N
         normalize_addition(w, modulus); // TODO issue 15
         assert_normalized(w, modulus);
-    cgbn_mont2bn(_env, w, w, modulus, np0);
-        assert_normalized(w, modulus);
 
     cgbn_mont_sqr(_env, v, v, modulus, np0); // (DA-CB)^2 mod N
         normalize_addition(v, modulus); // TODO issue 15
@@ -337,8 +316,6 @@ class curve_t {
     // v = bY is finalized
     cgbn_add(_env, v, v, v); // double
     normalize_addition(v, modulus);
-        assert_normalized(v, modulus);
-    cgbn_mont2bn(_env, v, v, modulus, np0);
         assert_normalized(v, modulus);
 
     if (PRINT_DEBUG && thread_i == 0)
@@ -539,6 +516,21 @@ __global__ void kernel_double_add(
    * https://en.wikipedia.org/wiki/Elliptic_curve_point_multiplication#Point_doubling
    */
 
+  uint32_t np0;
+  {
+    // Convert everything to mont
+    np0 = cgbn_bn2mont(curve._env, aX, aX, modulus);
+    cgbn_bn2mont(curve._env, aY, aY, modulus);
+    cgbn_bn2mont(curve._env, bX, bX, modulus);
+    cgbn_bn2mont(curve._env, bY, bY, modulus);
+    {
+      curve.assert_normalized(aX, modulus);
+      curve.assert_normalized(aY, modulus);
+      curve.assert_normalized(bX, modulus);
+      curve.assert_normalized(bY, modulus);
+    }
+  }
+
   // TODO Do the progressive queue thing.
   for (int b = 0; b < num_bits; b++) {
     if (PRINT_DEBUG && instance_j == 0) {
@@ -548,12 +540,25 @@ __global__ void kernel_double_add(
                 cgbn_get_ui32(curve._env, bX), cgbn_get_ui32(curve._env, bY));
     }
     if (gpu_s_bits[b] == 0) {
-        curve.double_add_v2(aX, aY, bX, bY, d, b, modulus);
+        curve.double_add_v2(aX, aY, bX, bY, d, b, modulus, np0);
     } else {
-        curve.double_add_v2(bX, bY, aX, aY, d, b, modulus);
+        curve.double_add_v2(bX, bY, aX, aY, d, b, modulus, np0);
     }
   }
 
+  {
+    // Convert everything back to bn
+    cgbn_mont2bn(curve._env, aX, aX, modulus, np0);
+    cgbn_mont2bn(curve._env, aY, aY, modulus, np0);
+    cgbn_mont2bn(curve._env, bX, bX, modulus, np0);
+    cgbn_mont2bn(curve._env, bY, bY, modulus, np0);
+    {
+      curve.assert_normalized(aX, modulus);
+      curve.assert_normalized(aY, modulus);
+      curve.assert_normalized(bX, modulus);
+      curve.assert_normalized(bY, modulus);
+    }
+  }
   cgbn_store(curve._env, &(instance.aX), aX);
   cgbn_store(curve._env, &(instance.aY), aY);
   cgbn_store(curve._env, &(instance.bX), bX);
