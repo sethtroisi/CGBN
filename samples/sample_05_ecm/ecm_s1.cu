@@ -83,6 +83,7 @@ class ecm_params_t {
 // define the instance structure
 typedef struct {
     char* n = NULL;
+    int n_log2;
 
     // Number of curves to run
     uint32_t curves = 0;
@@ -354,18 +355,28 @@ class curve_t {
   }
 
   __host__ static instance_t *generate_instances(metadata_t &run_data) {
-    instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*run_data.curves);
-
     // P1_x, P1_y = (2,1)
     // 2P_x, 2P_y = (9, 64 * d + 8)
 
-    mpz_t x, n;
-    mpz_init(x);
+    mpz_t n;
     mpz_init(n);
+    // N
+    mpz_set_str(n, run_data.n, 10);
+    run_data.n_log2 = mpz_sizeinbase(n, 2);
+    if (run_data.n_log2 + 32 > params::BITS) {
+        printf("N %d bits is to near BITS %d\n", run_data.n_log2, params::BITS);
+        printf("being caution, feel free to disable this check\n");
+        printf("if you do disable, probably should verify a result against gmp-ecm\n");
+        mpz_clear(n);
+        exit(1);
+    }
+
 
     // B1 => s / s_bits
     assert( 2 <= run_data.B1 && run_data.B1 <= 11000000 );
 
+    mpz_t x;
+    mpz_init(x);
     compute_s_bits(x, run_data.B1);
     uint32_t num_bits = mpz_sizeinbase(x, 2) - 1;
     //printf("B1=%lu S has %d bits", run_data.B1, num_bits);
@@ -386,8 +397,7 @@ class curve_t {
         //    printf("S bit %d => %d\n", i, run_data.s_bits[i]);
     }
 
-    // N
-    mpz_set_str(n, run_data.n, 10);
+    instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*run_data.curves);
 
     for(int index=0;index<run_data.curves;index++) {
         instance_t &instance = instances[index];
@@ -421,7 +431,6 @@ class curve_t {
         // if (PRINT_DEBUG)
         //    gmp_printf("%d => %Zd\n", instance.d, x);
         from_mpz(x, instance.bY._limbs, params::BITS/32);
-
     }
 
     mpz_clear(x);
@@ -598,14 +607,15 @@ void run_test(metadata_t &run_data) {
     mpz_mul(x, x, y);         // aX * aY^-1
     mpz_mod(x, x, n);
 
-    gmp_fprintf(run_data.file, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X=0x%Zx;\n", instance.d, run_data.B1, x);
+    gmp_fprintf(run_data.file, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=0x%Zx; X=0x%Zx;\n",
+        instance.d, run_data.B1, n, x);
   }
   mpz_clear(x);
   mpz_clear(y);
   mpz_clear(n);
 
-  printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f\n",
-      run_data.curves, params::BITS, run_data.num_bits, diff);
+  printf("Finished %d curves (%d/%d BITS) with %d double_adds in %.4f seconds\n",
+      run_data.curves, run_data.n_log2, params::BITS, run_data.num_bits, diff);
   printf("Throughput: %.1f curves per second (on average %.2fms per Step 1)\n",
       run_data.curves / diff, 1000 * diff / run_data.curves);
   printf("\n");
@@ -625,7 +635,7 @@ int main(int argc, char** argv) {
   }
 
   // TPI=8 is fastest, TPI=32 if only want to run a single curve
-  typedef ecm_params_t<8, 1024 + 512> params;
+  typedef ecm_params_t<8, 512> params;
 
   metadata_t run_data;
   run_data.sigma = atol(argv[1]);
@@ -633,8 +643,8 @@ int main(int argc, char** argv) {
   run_data.n = argv[3];
   run_data.file = stderr;
 
-  run_data.curves = 1;
-  //run_data.curves = 28*64;
+  //run_data.curves = 1;
+  run_data.curves = 28*64;
   run_test<params>(run_data);
 
   /*
