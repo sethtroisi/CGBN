@@ -50,14 +50,17 @@ IN THE SOFTWARE.
 
 // See cgbn_error_t enum (cgbn.h:39)
 #define cgbn_normalized_error ((cgbn_error_t) 14)
+#define cgbn_positive_overflow ((cgbn_error_t) 15)
+#define cgbn_negative_overflow ((cgbn_error_t) 16)
 
-#define PRINT_DEBUG 1
+#define PRINT_DEBUG 0
 
 // Seems to adds very small overhead
 #define VERIFY_NORMALIZED 1
 
 // Dramatically increases compile time
-#define FORCE_INLINE __forceinline__
+#define FORCE_INLINE
+// __forceinline__
 
 
 template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
@@ -150,7 +153,6 @@ class curve_t {
     cgbn_set(_env, aY, D);
     cgbn_set(_env, bX, A);
     cgbn_set(_env, bY, B);
-    return
 // */
 
     cgbn_mont_mul(_env, CB, C, B, modulus, np0);
@@ -198,11 +200,11 @@ class curve_t {
 
         // Negative overflow
         if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
-            _context.report_error(cgbn_normalized_error);
+            _context.report_error(cgbn_negative_overflow);
         }
         // Positive overflow
         if (cgbn_compare(_env, r, modulus) >= 0) {
-            _context.report_error(cgbn_normalized_error);
+            _context.report_error(cgbn_positive_overflow);
         }
     }
   }
@@ -239,18 +241,21 @@ class curve_t {
 
     cgbn_shift_right(_env, r, r, 32);
     cgbn_shift_right(_env, temp, temp, 32);
-    // Add back carry
+    // Add back overflow carry
     cgbn_insert_bits_ui32(_env, r, r, params::BITS-32, 32, carry_t1);
     cgbn_insert_bits_ui32(_env, temp, temp, params::BITS-32, 32, carry_t2);
 
+    // This needs to be measured at block containing top bit of modulus
     int32_t carry_q = cgbn_add(_env, r, r, temp);
     carry_q += cgbn_add_ui32(_env, r, r, t1_0 != 0);
-
-    //if (thread_i == 0)
-    //    printf("np0: %u, m: %u, q: %u | carry_q: %u\n", np0, m, q, carry_q);
-
     while (carry_q != 0) {
         carry_q -= cgbn_sub(_env, r, r, modulus);
+    }
+
+    // TODO can this be more elegant?
+    // Show be 1 or 2, never more
+    while (cgbn_compare(_env, r, modulus) >= 0) {
+        cgbn_sub(_env, r, r, modulus);
     }
   }
 
@@ -259,7 +264,7 @@ class curve_t {
           bn_t &q, bn_t &u,
           bn_t &w, bn_t &v,
           uint32_t d,
-          uint32_t bit,
+          uint32_t bit_number,
           const bn_t &modulus) {
 
     uint32_t thread_i = (blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
@@ -280,7 +285,7 @@ class curve_t {
     // find np0 correctly
     uint32_t np0 = cgbn_bn2mont(_env, t, q, modulus);
     if (PRINT_DEBUG && thread_i == 0) {
-        printf("\tv2 %d,%d | np0 %u\n", _instance, bit, np0);
+        printf("\tv2 %d,%d | np0 %u\n", _instance, bit_number, np0);
         printf("\t\tin\t(%u, %u),  (%u, %u)\n",
                 cgbn_get_ui32(_env, q), cgbn_get_ui32(_env, u),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
@@ -322,32 +327,23 @@ class curve_t {
                 cgbn_get_ui32(_env, t), cgbn_get_ui32(_env, v),
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, u));
 
-    cgbn_set(_env, q, modulus);
-    cgbn_set_ui32(_env, u, 0);
-    cgbn_set_ui32(_env, w, 0);
-    cgbn_set_ui32(_env, v, 0);
-    //cgbn_set(_env, v, u);
-    //cgbn_set(_env, v, modulus);
-
-    //cgbn_set_ui64(_env, v, v, 9,007,199,254,740,992); 1 << 53
-    cgbn_set_ui32(_env, w, 1);
-    cgbn_shift_left(_env, w, w, 53);
-    cgbn_sub(_env, w, modulus, w);
-
-    // This doesn't mod correctly here, but does in sample_01_add with same data
-    cgbn_mont_sqr(_env, v, w, modulus, np0);    // BB
-    return;
-
     cgbn_mont_mul(_env, t, t, u, modulus, np0); // C*B
+        normalize_addition(t, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
     cgbn_mont_mul(_env, v, v, w, modulus, np0); // D*A
+        normalize_addition(v, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
+
     // TODO check if using temporary is faster?
     cgbn_mont_sqr(_env, w, w, modulus, np0);    // AA
     cgbn_mont_sqr(_env, u, u, modulus, np0);    // BB
+    // TODO: https://github.com/NVlabs/CGBN/issues/15
+    // sqr can result > modulus, have to potentially correct
+    normalize_addition(w, modulus);
+    normalize_addition(u, modulus);
     {
         assert_normalized(t, modulus);
         assert_normalized(v, modulus);
         assert_normalized(w, modulus);
-    //    assert_normalized(u, modulus);
+        assert_normalized(u, modulus);
     }
     if (PRINT_DEBUG && thread_i == 0)
         printf("\t\t2\t(%u, %u),  (%u, %u)\n",
@@ -356,6 +352,7 @@ class curve_t {
 
     // q = aX is finalized
     cgbn_mont_mul(_env, q, u, w, modulus, np0); // AA*BB
+        normalize_addition(q, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(q, modulus);
     cgbn_mont2bn(_env, q, q, modulus, np0);
         assert_normalized(q, modulus);
@@ -369,7 +366,6 @@ class curve_t {
     cgbn_set(_env, t2, w);
     special_mult_ui32(t2, d, modulus, np0, t3); // t2 = dK (using t3 as temp)
         assert_normalized(t2, modulus);
-
 
     cgbn_add(_env, u, u, t2); // BB + dK
     normalize_addition(u, modulus);
@@ -388,6 +384,7 @@ class curve_t {
 
     // u = aY is finalized
     cgbn_mont_mul(_env, u, w, u, modulus, np0); // K(BB+dK)
+        normalize_addition(u, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(u, modulus);
     cgbn_mont2bn(_env, u, u, modulus, np0);
         assert_normalized(u, modulus);
@@ -408,11 +405,13 @@ class curve_t {
 
     // w = bX is finalized
     cgbn_mont_sqr(_env, w, w, modulus, np0); // (DA+CB)^2 mod N
+        normalize_addition(w, modulus); // TODO issue 15
         assert_normalized(w, modulus);
     cgbn_mont2bn(_env, w, w, modulus, np0);
         assert_normalized(w, modulus);
 
     cgbn_mont_sqr(_env, v, v, modulus, np0); // (DA-CB)^2 mod N
+        normalize_addition(v, modulus); // TODO issue 15
         assert_normalized(v, modulus);
 
     // v = bY is finalized
@@ -488,37 +487,31 @@ class curve_t {
   __host__ static instance_t *generate_instances(metadata_t &run_data, uint32_t count) {
     instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
 
-    // XXX: calc d_z from sigma
-    // XXX: 2P_y depends on d which depends on bits (or np0)
-
-    // N, P1_x, P1_y, 2P_x, 2P_y, B1
+    // P1_x, P1_y = (2,1)
+    // 2P_x, 2P_y = (9, 64 * d + 8)
     uint32_t sigma = 12;
-    char data[][1000] = {
-        // "2147483647", "2", "1", "9", "392", "2" // X = 2021483331
-        // "2147483647", "2", "1", "9", "392", "10" // X = 1250014575
-        // "2147483647", "2", "1", "9", "392", "100"
-        // "2147483647", "2", "1", "9", "392", "5000" // X = 1409594724
-        // "1751180522011351", "2", "1", "9", "1617503716737094", "2"
-        // "1751180522011351", "2", "1", "9", "1617503716737094", "10"
-        // "1751180522011351", "2", "1", "9", "1617503716737094", "1000"
-       // /*
-       // 2^971
+
+    // N, B1
+    char N_str[] = {
+//        "2147483647", // B1=2    X = 2021483331
+                        // B1=10   X = 1250014575
+                        // B1=5000 X = 1409594724
+//        "1751180522011351" // B1=2    X = 1321180230405691
+                             // B1=1000 X = 949968091470892
+       // /* 2^971
        "199584030953471981165637271303683856606745126043545754150254724243721189186896406578495"
        "796549263570108934244684419249524397243798839359366073917179828483142032000567295108567"
        "651753772144436298718265335674454392399333081045512087038888885526844804415750712090687"
-       "57560416423584952303440099278847", "2", "1", "9",
-       "356884058034667935071534999555976134431502448398254670173385246235825757718497049650840"
-       "395479077524141551693709646313532109100458930777369869799339464574710187913001707390369"
-       "746244738360231456848857406987764344929456259689650691221157703745683677939922890825308"
-       "9945390777036837155241992", "2" // X(10000) = 192674 ... 701818
+       "57560416423584952303440099278847" // B1=10000  X = 192674 ... 701818
        // */
     };
 
-    mpz_t x;
+    mpz_t x, n;
     mpz_init(x);
+    mpz_init(n);
 
     // B1 => s / s_bits
-    uint64_t B1 = atol(data[5]);
+    uint64_t B1 = 10000;
     assert( 2 <= B1 && B1 <= 11000000 );
 
     compute_s_bits(x, B1);
@@ -529,7 +522,7 @@ class curve_t {
     }
     printf("\n");
 
-    assert( num_bits <= 65'535 );
+    assert( num_bits <= 1442098 ); // B1 = 1e6, bits = 1.4e65
     run_data.B1 = B1;
     run_data.num_bits = num_bits;
     // Use int* so that size can be stored in first element, could pass around extra size.
@@ -537,34 +530,51 @@ class curve_t {
 
     for (int i = 0; i < num_bits; i++) {
         run_data.s_bits[i] = mpz_tstbit (x, num_bits - 1 - i);
-        if (PRINT_DEBUG)
-            printf("%d => %d\n", i, run_data.s_bits[i]);
+        // print with verbose 3
+        // if (PRINT_DEBUG)
+        //    printf("S bit %d => %d\n", i, run_data.s_bits[i]);
     }
+
+    // N
+    mpz_set_str(n, N_str, 10);
 
     for(int index=0;index<count;index++) {
         instance_t &instance = instances[index];
 
-        // N
-        mpz_set_str(x, data[0], 10);
-        from_mpz(x, instance.modulus._limbs, params::BITS/32);
+        // d = (sigma / 2^32) mod N BUT 2^32 handled by special_mul_ui32
+        instance.d = sigma + index;
+
+        // mod
+        from_mpz(n, instance.modulus._limbs, params::BITS/32);
 
         // P1 (X, Y)
-        mpz_set_str(x, data[1], 10);
+        mpz_set_ui(x, 2);
         from_mpz(x, instance.aX._limbs, params::BITS/32);
-        mpz_set_str(x, data[2], 10);
+        mpz_set_ui(x, 1);
         from_mpz(x, instance.aY._limbs, params::BITS/32);
 
         // 2P = P2 (X, Y)
-        mpz_set_str(x, data[3], 10);
+        // P2_y = 64 * d + 8
+        mpz_set_ui(x, 9);
         from_mpz(x, instance.bX._limbs, params::BITS/32);
-        mpz_set_str(x, data[4], 10);
+
+        // d = sigma * mod_inverse(2 ** 32, N)
+        mpz_ui_pow_ui(x, 2, 32);
+        mpz_invert(x, x, n);
+        mpz_mul_ui(x, x, instance.d);
+        // P2_y = 64 * d - 2;
+        mpz_mul_ui(x, x, 64);
+        mpz_add_ui(x, x, 8);
+        mpz_mod(x, x, n);
+
+        // if (PRINT_DEBUG)
+        //    gmp_printf("%d => %Zd\n", instance.d, x);
         from_mpz(x, instance.bY._limbs, params::BITS/32);
 
-        // d = (sigma / 2^32) mod N BUT 2^32 handled by special_mul_ui32
-        instance.d = sigma + index;
     }
 
     mpz_clear(x);
+    mpz_clear(n);
 
     return instances;
   }
@@ -666,7 +676,11 @@ void run_test(uint32_t instance_count) {
 
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
   CUDA_CHECK(cudaDeviceSynchronize());
+  if (report->_error) {
+      printf("\n\nerror: %d\n", report->_error);
+  }
   CGBN_CHECK(report);
+
 
   // Copy the instances back from gpuMemory
   //printf("Copying results back to CPU ...\n");
@@ -674,16 +688,12 @@ void run_test(uint32_t instance_count) {
 
   auto end_t = std::chrono::high_resolution_clock::now();
   double diff = std::chrono::duration<float>(end_t - start_t).count();
-  printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f = %.0f curves/second\n",
-      instance_count, params::BITS, run_data.num_bits, diff,
-      instance_count / diff);
 
   mpz_t x, y, n;
   mpz_init(x);
   mpz_init(y);
   mpz_init(n);
   for(int index=0; index<instance_count; index++) {
-    if (index >= 1) break;
     instance_t &instance = instances[index];
 
     if (PRINT_DEBUG && index == 0) {
@@ -706,11 +716,15 @@ void run_test(uint32_t instance_count) {
     mpz_mul(x, x, y);         // aX * aY^-1
     mpz_mod(x, x, n);
 
-    gmp_printf("METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X = %Zd\n", instance.d, run_data.B1, x);
+    //gmp_printf("METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X = %Zd\n", instance.d, run_data.B1, x);
   }
   mpz_clear(x);
   mpz_clear(y);
   mpz_clear(n);
+
+  printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f = %.0f curves/second\n",
+      instance_count, params::BITS, run_data.num_bits, diff,
+      instance_count / diff);
 
   // clean up
   free(run_data.s_bits);
@@ -724,7 +738,7 @@ int main() {
   typedef ecm_params_t<8, 1024, 5> params;
 
   run_test<params>(1);
-  /*
+  // /*
   // Warm up
   run_test<params>(256);
 
