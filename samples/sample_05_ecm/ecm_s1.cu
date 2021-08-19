@@ -46,7 +46,6 @@ IN THE SOFTWARE.
 // Locally it will also be helpful to have several parameters:
 //   TPI             - threads per instance
 //   BITS            - number of bits per instance
-//   WINDOW_BITS     - number of bits to use for the windowed exponentiation
 
 // See cgbn_error_t enum (cgbn.h:39)
 #define cgbn_normalized_error ((cgbn_error_t) 14)
@@ -67,7 +66,7 @@ IN THE SOFTWARE.
     #define FORCE_INLINE
 #endif
 
-template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
+template<uint32_t tpi, uint32_t bits>
 class ecm_params_t {
   public:
   // parameters used by the CGBN context
@@ -79,7 +78,6 @@ class ecm_params_t {
   // parameters used locally in the application
   static const uint32_t TPI=tpi;                   // threads per instance
   static const uint32_t BITS=bits;                 // instance size
-  static const uint32_t WINDOW_BITS=window_bits;   // window size
 };
 
 // define the instance structure
@@ -106,7 +104,6 @@ typedef struct {
 template<class params>
 class curve_t {
   public:
-  static const uint32_t window_bits=params::WINDOW_BITS;  // used a lot, give it an instance variable
 
   // define the instance structure
   typedef struct {
@@ -377,7 +374,7 @@ class curve_t {
     //}
     //printf("\n");
 
-    assert( num_bits <= 1442098 ); // B1 = 1e6, bits = 1.4e65
+    assert( 1 <= num_bits <= 1e8 );
     run_data.num_bits = num_bits;
     // Use int* so that size can be stored in first element, could pass around extra size.
     run_data.s_bits = (char*) malloc(sizeof(char) * num_bits);
@@ -628,7 +625,7 @@ int main(int argc, char** argv) {
   }
 
   // TPI=8 is fastest, TPI=32 if only want to run a single curve
-  typedef ecm_params_t<8, 1024 + 512, 5> params;
+  typedef ecm_params_t<8, 1024 + 512> params;
 
   metadata_t run_data;
   run_data.sigma = atol(argv[1]);
@@ -636,10 +633,8 @@ int main(int argc, char** argv) {
   run_data.n = argv[3];
   run_data.file = stderr;
 
-  //run_data.curves = 1;
-  //run_test<params>(run_data);
-
-  run_data.curves = 28*64;
+  run_data.curves = 1;
+  //run_data.curves = 28*64;
   run_test<params>(run_data);
 
   /*
