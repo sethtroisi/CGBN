@@ -55,12 +55,13 @@ IN THE SOFTWARE.
 
 #define PRINT_DEBUG 0
 
-// Seems to adds very small overhead
+// Seems to adds very small overhead (1-10%)
 #define VERIFY_NORMALIZED 1
+// Adds even less overhead (<1%)
+#define CHECK_ERROR 1
 
 // Dramatically increases compile time
-#define FORCE_INLINE
-// __forceinline__
+#define FORCE_INLINE __forceinline__
 
 
 template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
@@ -80,11 +81,21 @@ class ecm_params_t {
 
 // define the instance structure
 typedef struct {
+    // Number of curves to run
     uint32_t curves = 0;
     uint64_t B1 = 0;
-    uint64_t sigma = 10;
+
+    // Number of bits in S (based on B1)
     uint32_t num_bits;
-    char*     s_bits;
+    // Bits (malloc'ed in generate_instance)
+    char    *s_bits;
+
+    // output file for stage1 residual
+    FILE    *file = stdout;
+
+    // Sigma of first curve
+    uint64_t sigma = 10;
+
 } metadata_t;
 
 template<class params>
@@ -133,7 +144,6 @@ class curve_t {
 
   // Normalize after addition
   __device__ FORCE_INLINE void normalize_addition(bn_t &r, const bn_t &modulus) {
-
       if (cgbn_compare(_env, r, modulus) >= 0) {
           cgbn_sub(_env, r, r, modulus);
       }
@@ -141,7 +151,6 @@ class curve_t {
 
   // Normalize after subtraction
   __device__ FORCE_INLINE void normalize_subtraction(bn_t &r, const bn_t &modulus) {
-
       if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
           cgbn_add(_env, r, r, modulus);
       }
@@ -413,11 +422,11 @@ class curve_t {
 
     compute_s_bits(x, run_data.B1);
     uint32_t num_bits = mpz_sizeinbase(x, 2) - 1;
-    printf("B1=%lu S has %d bits", run_data.B1, num_bits);
-    if (num_bits < 200) {
-        gmp_printf(": %Zd", x);
-    }
-    printf("\n");
+    //printf("B1=%lu S has %d bits", run_data.B1, num_bits);
+    //if (num_bits < 200) {
+    //    gmp_printf(": %Zd", x);
+    //}
+    //printf("\n");
 
     assert( num_bits <= 1442098 ); // B1 = 1e6, bits = 1.4e65
     run_data.num_bits = num_bits;
@@ -495,9 +504,10 @@ __global__ void kernel_double_add(
 
   if (instance_j == -123) return;   // avoid unused warning
 
-  curve_t<params>                 curve(cgbn_report_monitor, report, instance_i);
-  typename curve_t<params>::bn_t  aX, aY, bX, bY, modulus;
+  cgbn_monitor_t monitor = CHECK_ERROR ? cgbn_report_monitor : cgbn_no_checks;
 
+  curve_t<params> curve(monitor, report, instance_i);
+  typename curve_t<params>::bn_t  aX, aY, bX, bY, modulus;
   typename curve_t<params>::instance_t &instance = instances[instance_i];
 
   // the loads and stores can go in the class, but it seems more natural to have them
@@ -573,7 +583,8 @@ void run_test(metadata_t &run_data) {
   size_t               instance_size = sizeof(instance_t) * run_data.curves;
   cgbn_error_report_t *report;
   int32_t              TPB=(params::TPB==0) ? 128 : params::TPB;    // default threads per block to 128
-  int32_t              TPI=params::TPI, IPB=TPB/TPI;                // IPB is instances per block
+  int32_t              TPI=params::TPI,
+                       IPB=TPB/TPI;                                 // IPB is instances per block
 
   size_t gpu_block_count = (run_data.curves+IPB-1)/IPB;
 
@@ -581,7 +592,7 @@ void run_test(metadata_t &run_data) {
   instances = curve_t<params>::generate_instances(run_data);
   assert(run_data.s_bits != NULL);
 
-  printf("Copying s_bits(%d) and instances(%d) to the GPU ...\n", run_data.num_bits, run_data.curves);
+  //printf("Copying s_bits(%d) and instances(%d) to the GPU ...\n", run_data.num_bits, run_data.curves);
   CUDA_CHECK(cudaSetDevice(0));
   // Copy s_bits
   CUDA_CHECK(cudaMalloc((void **)&gpu_s_bits, sizeof(char) * run_data.num_bits));
@@ -641,7 +652,7 @@ void run_test(metadata_t &run_data) {
     mpz_mul(x, x, y);         // aX * aY^-1
     mpz_mod(x, x, n);
 
-    gmp_fprintf(stderr, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X=0x%Zx;\n", instance.d, run_data.B1, x);
+    gmp_fprintf(run_data.file, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X=0x%Zx;\n", instance.d, run_data.B1, x);
   }
   mpz_clear(x);
   mpz_clear(y);
@@ -651,6 +662,7 @@ void run_test(metadata_t &run_data) {
       run_data.curves, params::BITS, run_data.num_bits, diff);
   printf("Throughput: %.1f curves per second (on average %.2fms per Step 1)\n",
       run_data.curves / diff, 1000 * diff / run_data.curves);
+  printf("\n");
 
   // clean up
   free(run_data.s_bits);
@@ -661,21 +673,24 @@ void run_test(metadata_t &run_data) {
 }
 
 int main(int argc, char** argv) {
-  typedef ecm_params_t<32, 1024, 5> params;
+  // TPI=8 is fastest, TPI=32 if only want to run a single curve
+  typedef ecm_params_t<8, 1024, 5> params;
 
   metadata_t run_data;
   run_data.B1 = argc <= 1 ? 100 : atol(argv[1]);
   run_data.sigma = 2000;
+  run_data.file = stderr;
 
   run_data.curves = 1;
   run_test<params>(run_data);
 
-  run_data.curves = 1792;
-  //run_test<params>(run_data);
+  run_data.curves = 28*64;
+  run_test<params>(run_data);
 
   /*
-  // Warm up
-  for(int curves : {256, 16*63, 16*65, 16*100, 1790, 1792, 1794, 2000, 1780*2}) {
+  // Try to find optimal curves / batch
+  int tuning[] = {256, 16*63, 16*65, 16*100, 1790, 1792, 1794, 2000, 1780*2};
+  for(int32_t curves : tuning) {
     run_data.curves = curves;
     run_test<params>(run_data);
   }
