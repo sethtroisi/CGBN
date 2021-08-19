@@ -583,6 +583,8 @@ void run_test(metadata_t &run_data) {
   mpz_init(y);
   mpz_init(n);
 
+  bool no_factor = true;
+
   // XXX: gmp-ecm returns results in reverse order
   for(int index=run_data.curves-1; index>=0; index--) {
     instance_t &instance = instances[index];
@@ -601,14 +603,24 @@ void run_test(metadata_t &run_data) {
     to_mpz(x, instance.aX._limbs, params::BITS/32);
     to_mpz(y, instance.aY._limbs, params::BITS/32);
 
-    mpz_invert(y, y, n);    // aY ^ (N-2) % N
+    // Check if factor found
+    bool inverted = mpz_invert(y, y, n);    // aY ^ (N-2) % N
+    if (!inverted) {
+        // Reload y just to be safe
+        to_mpz(y, instance.aY._limbs, params::BITS/32);
+        mpz_gcd(y, y, n);
+        gmp_printf("Factor found: %Zd\n", y);
+        no_factor = false;
+    }
 
     to_mpz(x, instance.aX._limbs, params::BITS/32);
     mpz_mul(x, x, y);         // aX * aY^-1
     mpz_mod(x, x, n);
 
-    gmp_fprintf(run_data.file, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=0x%Zx; X=0x%Zx;\n",
-        instance.d, run_data.B1, n, x);
+    if (no_factor) {
+        gmp_fprintf(run_data.file, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=0x%Zx; X=0x%Zx;\n",
+            instance.d, run_data.B1, n, x);
+    }
   }
   mpz_clear(x);
   mpz_clear(y);
