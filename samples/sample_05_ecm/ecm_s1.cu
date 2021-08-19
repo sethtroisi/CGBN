@@ -80,7 +80,9 @@ class ecm_params_t {
 
 // define the instance structure
 typedef struct {
-    uint64_t B1;
+    uint32_t curves = 0;
+    uint64_t B1 = 0;
+    uint64_t sigma = 10;
     uint32_t num_bits;
     char*     s_bits;
 } metadata_t;
@@ -381,12 +383,11 @@ class curve_t {
       mpz_clear(ppz);
   }
 
-  __host__ static instance_t *generate_instances(metadata_t &run_data, uint32_t count) {
-    instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
+  __host__ static instance_t *generate_instances(metadata_t &run_data) {
+    instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*run_data.curves);
 
     // P1_x, P1_y = (2,1)
     // 2P_x, 2P_y = (9, 64 * d + 8)
-    uint32_t sigma = 12;
 
     // N, B1
     char N_str[] = {
@@ -408,19 +409,17 @@ class curve_t {
     mpz_init(n);
 
     // B1 => s / s_bits
-    uint64_t B1 = 10000;
-    assert( 2 <= B1 && B1 <= 11000000 );
+    assert( 2 <= run_data.B1 && run_data.B1 <= 11000000 );
 
-    compute_s_bits(x, B1);
+    compute_s_bits(x, run_data.B1);
     uint32_t num_bits = mpz_sizeinbase(x, 2) - 1;
-    printf("B1=%lu S has %d bits", B1, num_bits);
+    printf("B1=%lu S has %d bits", run_data.B1, num_bits);
     if (num_bits < 200) {
         gmp_printf(": %Zd", x);
     }
     printf("\n");
 
     assert( num_bits <= 1442098 ); // B1 = 1e6, bits = 1.4e65
-    run_data.B1 = B1;
     run_data.num_bits = num_bits;
     // Use int* so that size can be stored in first element, could pass around extra size.
     run_data.s_bits = (char*) malloc(sizeof(char) * num_bits);
@@ -435,11 +434,11 @@ class curve_t {
     // N
     mpz_set_str(n, N_str, 10);
 
-    for(int index=0;index<count;index++) {
+    for(int index=0;index<run_data.curves;index++) {
         instance_t &instance = instances[index];
 
         // d = (sigma / 2^32) mod N BUT 2^32 handled by special_mul_ui32
-        instance.d = sigma + index;
+        instance.d = run_data.sigma + index;
 
         // mod
         from_mpz(n, instance.modulus._limbs, params::BITS/32);
@@ -566,30 +565,30 @@ __global__ void kernel_double_add(
 }
 
 template<class params>
-void run_test(uint32_t instance_count) {
+void run_test(metadata_t &run_data) {
   typedef typename curve_t<params>::instance_t instance_t;
 
-  metadata_t           run_data;
   char                *gpu_s_bits;
   instance_t          *instances, *gpu_instances;
+  size_t               instance_size = sizeof(instance_t) * run_data.curves;
   cgbn_error_report_t *report;
   int32_t              TPB=(params::TPB==0) ? 128 : params::TPB;    // default threads per block to 128
   int32_t              TPI=params::TPI, IPB=TPB/TPI;                // IPB is instances per block
 
-  size_t gpu_block_count = (instance_count+IPB-1)/IPB;
+  size_t gpu_block_count = (run_data.curves+IPB-1)/IPB;
 
-  //printf("Genereating instances ...\n");
-  instances = curve_t<params>::generate_instances(run_data, instance_count);
+  //printf("Generating instances ...\n");
+  instances = curve_t<params>::generate_instances(run_data);
   assert(run_data.s_bits != NULL);
 
-  printf("Copying s_bits(%d) and instances(%d) to the GPU ...\n", run_data.num_bits, instance_count);
+  printf("Copying s_bits(%d) and instances(%d) to the GPU ...\n", run_data.num_bits, run_data.curves);
   CUDA_CHECK(cudaSetDevice(0));
   // Copy s_bits
   CUDA_CHECK(cudaMalloc((void **)&gpu_s_bits, sizeof(char) * run_data.num_bits));
   CUDA_CHECK(cudaMemcpy(gpu_s_bits, run_data.s_bits, sizeof(char) * (run_data.num_bits), cudaMemcpyHostToDevice));
   // Copy instances
-  CUDA_CHECK(cudaMalloc((void **)&gpu_instances, sizeof(instance_t)*instance_count));
-  CUDA_CHECK(cudaMemcpy(gpu_instances, instances, sizeof(instance_t)*instance_count, cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc((void **)&gpu_instances, instance_size));
+  CUDA_CHECK(cudaMemcpy(gpu_instances, instances, instance_size, cudaMemcpyHostToDevice));
 
   // create a cgbn_error_report for CGBN to report back errors
   CUDA_CHECK(cgbn_error_report_alloc(&report));
@@ -597,7 +596,7 @@ void run_test(uint32_t instance_count) {
   printf("Running GPU kernel<%ld,%d> ...\n", gpu_block_count, TPB);
   auto start_t = std::chrono::high_resolution_clock::now();
   kernel_double_add<params><<<gpu_block_count, TPB>>>(
-    report, run_data.num_bits, gpu_s_bits, gpu_instances, instance_count);
+    report, run_data.num_bits, gpu_s_bits, gpu_instances, run_data.curves);
 
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
   CUDA_CHECK(cudaDeviceSynchronize());
@@ -606,10 +605,9 @@ void run_test(uint32_t instance_count) {
   }
   CGBN_CHECK(report);
 
-
   // Copy the instances back from gpuMemory
   //printf("Copying results back to CPU ...\n");
-  CUDA_CHECK(cudaMemcpy(instances, gpu_instances, sizeof(instance_t)*instance_count, cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(instances, gpu_instances, instance_size, cudaMemcpyDeviceToHost));
 
   auto end_t = std::chrono::high_resolution_clock::now();
   double diff = std::chrono::duration<float>(end_t - start_t).count();
@@ -618,7 +616,9 @@ void run_test(uint32_t instance_count) {
   mpz_init(x);
   mpz_init(y);
   mpz_init(n);
-  for(int index=0; index<instance_count; index++) {
+
+  // XXX: gmp-ecm returns results in reverse order
+  for(int index=run_data.curves-1; index>=0; index--) {
     instance_t &instance = instances[index];
 
     if (PRINT_DEBUG && index == 0) {
@@ -641,15 +641,16 @@ void run_test(uint32_t instance_count) {
     mpz_mul(x, x, y);         // aX * aY^-1
     mpz_mod(x, x, n);
 
-    //gmp_printf("METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X = %Zd\n", instance.d, run_data.B1, x);
+    gmp_fprintf(stderr, "METHOD=ECM; PARAM=3; SIGMA=%d; B1=%d; N=<OMITTED>; X=0x%Zx;\n", instance.d, run_data.B1, x);
   }
   mpz_clear(x);
   mpz_clear(y);
   mpz_clear(n);
 
-  printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f = %.0f curves/second\n",
-      instance_count, params::BITS, run_data.num_bits, diff,
-      instance_count / diff);
+  printf("Testing %d candidates (%d BITS) for %d double_adds took %.4f\n",
+      run_data.curves, params::BITS, run_data.num_bits, diff);
+  printf("Throughput: %.1f curves per second (on average %.2fms per Step 1)\n",
+      run_data.curves / diff, 1000 * diff / run_data.curves);
 
   // clean up
   free(run_data.s_bits);
@@ -659,22 +660,24 @@ void run_test(uint32_t instance_count) {
   CUDA_CHECK(cgbn_error_report_free(report));
 }
 
-int main() {
-  typedef ecm_params_t<8, 1024, 5> params;
+int main(int argc, char** argv) {
+  typedef ecm_params_t<32, 1024, 5> params;
 
-  run_test<params>(1);
-  // /*
+  metadata_t run_data;
+  run_data.B1 = argc <= 1 ? 100 : atol(argv[1]);
+  run_data.sigma = 2000;
+
+  run_data.curves = 1;
+  run_test<params>(run_data);
+
+  run_data.curves = 1792;
+  //run_test<params>(run_data);
+
+  /*
   // Warm up
-  run_test<params>(256);
-
-  run_test<params>(16 * 63);
-  run_test<params>(16 * 65);
-  run_test<params>(16 * 100);
-  run_test<params>(16 * 110);
-  run_test<params>(1790);
-  run_test<params>(1792);
-  run_test<params>(1794);
-  run_test<params>(2000);
-  run_test<params>(1780 * 2);
+  for(int curves : {256, 16*63, 16*65, 16*100, 1790, 1792, 1794, 2000, 1780*2}) {
+    run_data.curves = curves;
+    run_test<params>(run_data);
+  }
   // */
 }
