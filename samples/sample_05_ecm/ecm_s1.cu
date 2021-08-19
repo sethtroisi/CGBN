@@ -149,12 +149,14 @@ class curve_t {
       }
   }
 
-  // Normalize after subtraction
+  // Normalize after subtraction (handled instead by checking carry)
+  /*
   __device__ FORCE_INLINE void normalize_subtraction(bn_t &r, const bn_t &modulus) {
       if (cgbn_extract_bits_ui32(_env, r, params::BITS-1, 1)) {
           cgbn_add(_env, r, r, modulus);
       }
   }
+  */
 
   /**
    * Calculate (r * m) / 2^32 mod modulus
@@ -179,9 +181,9 @@ class curve_t {
     // This needs to be measured at block containing top bit of modulus
     int32_t carry_q = cgbn_add(_env, r, r, temp);
     carry_q += cgbn_add_ui32(_env, r, r, t1_0 != 0);
-    while (carry_q != 0) {
-        carry_q -= cgbn_sub(_env, r, r, modulus);
-    }
+    //while (carry_q != 0) {
+    //    carry_q -= cgbn_sub(_env, r, r, modulus);
+    //}
 
     // TODO can this be more elegant?
     // Show be 1 or 2, never more
@@ -222,17 +224,17 @@ class curve_t {
                 cgbn_get_ui32(_env, w), cgbn_get_ui32(_env, v));
     }
 
-
-    // TODO use carry results to normalize
     cgbn_add(_env, t, v, w); // t = (bY + bX)
     normalize_addition(t, modulus);
-    cgbn_sub(_env, v, v, w); // v = (bY - bX)
-    normalize_subtraction(v, modulus);
+    if (cgbn_sub(_env, v, v, w)) // v = (bY - bX)
+        cgbn_add(_env, v, v, modulus);
+
+
     cgbn_add(_env, w, u, q); // w = (aY + aX)
     normalize_addition(w, modulus);
-    cgbn_sub(_env, u, u, q); // u = (aY - aX)
-    normalize_subtraction(u, modulus);
-    {
+    if (cgbn_sub(_env, u, u, q)) // u = (aY - aX)
+        cgbn_add(_env, u, u, modulus);
+    if (VERIFY_NORMALIZED) {
         assert_normalized(t, modulus);
         assert_normalized(v, modulus);
         assert_normalized(w, modulus);
@@ -248,14 +250,11 @@ class curve_t {
     cgbn_mont_mul(_env, v, v, w, modulus, np0); // D*A
         normalize_addition(v, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
 
-    // TODO check if using temporary is faster?
     cgbn_mont_sqr(_env, w, w, modulus, np0);    // AA
     cgbn_mont_sqr(_env, u, u, modulus, np0);    // BB
-    // TODO: https://github.com/NVlabs/CGBN/issues/15
-    // sqr can result > modulus, have to potentially correct
-    normalize_addition(w, modulus);
-    normalize_addition(u, modulus);
-    {
+    normalize_addition(w, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
+    normalize_addition(u, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
+    if (VERIFY_NORMALIZED) {
         assert_normalized(t, modulus);
         assert_normalized(v, modulus);
         assert_normalized(w, modulus);
@@ -271,8 +270,8 @@ class curve_t {
         normalize_addition(q, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(q, modulus);
 
-    cgbn_sub(_env, w, w, u); // K = AA-BB
-    normalize_subtraction(w, modulus);
+    if (cgbn_sub(_env, w, w, u)) // K = AA-BB
+        cgbn_add(_env, w, w, modulus);
 
     // By definition of d = (sigma / 2^32) % MODN
     // K = k*R
@@ -283,7 +282,7 @@ class curve_t {
 
     cgbn_add(_env, u, u, t2); // BB + dK
     normalize_addition(u, modulus);
-    {
+    if (VERIFY_NORMALIZED) {
         assert_normalized(w, modulus);
         assert_normalized(t2, modulus);
         assert_normalized(u, modulus);
@@ -303,9 +302,9 @@ class curve_t {
 
     cgbn_add(_env, w, v, t); // DA + CB
     normalize_addition(w, modulus);
-    cgbn_sub(_env, v, v, t); // DA - CB
-    normalize_subtraction(v, modulus);
-    {
+    if (cgbn_sub(_env, v, v, t)) // DA - CB
+        cgbn_add(_env, v, v, modulus);
+    if (VERIFY_NORMALIZED) {
         assert_normalized(w, modulus);
         assert_normalized(v, modulus);
     }
