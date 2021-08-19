@@ -84,10 +84,12 @@ class ecm_params_t {
 
 // define the instance structure
 typedef struct {
+    char* n = NULL;
+
     // Number of curves to run
     uint32_t curves = 0;
-    uint64_t B1 = 0;
 
+    uint64_t B1 = 0;
     // Number of bits in S (based on B1)
     uint32_t num_bits;
     // Bits (malloc'ed in generate_instance)
@@ -168,8 +170,9 @@ class curve_t {
    * This removes a factor of 2^32 which is not present in m.
    * Otherwise m (really d) needs to be passed as a bigint not a uint32
    */
-  __device__ FORCE_INLINE void special_mult_ui32(bn_t &r, uint32_t m, const bn_t &modulus, uint32_t np0, bn_t &temp) {
+  __device__ FORCE_INLINE void special_mult_ui32(bn_t &r, uint32_t m, const bn_t &modulus, uint32_t np0) {
     //uint32_t thread_i = (blockIdx.x*blockDim.x + threadIdx.x)%params::TPI;
+    bn_t temp;
 
     uint32_t carry_t1 = cgbn_mul_ui32(_env, r, r, m);
     uint32_t t1_0 = cgbn_extract_bits_ui32(_env, r, 0, 32);
@@ -209,7 +212,7 @@ class curve_t {
     // v = zB = bY
 
     // Doesn't seem to be a large cost to using many extra variables
-    bn_t t, t2, t3;
+    bn_t t, CB, DA, AA, BB, K, dK;
 
     cgbn_add(_env, t, v, w); // t = (bY + bX)
     normalize_addition(t, modulus);
@@ -228,53 +231,53 @@ class curve_t {
         assert_normalized(u, modulus);
     }
 
-    cgbn_mont_mul(_env, t, t, u, modulus, np0); // C*B
-        normalize_addition(t, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
-    cgbn_mont_mul(_env, v, v, w, modulus, np0); // D*A
-        normalize_addition(v, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
+    cgbn_mont_mul(_env, CB, t, u, modulus, np0); // C*B
+        normalize_addition(CB, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
+    cgbn_mont_mul(_env, DA, v, w, modulus, np0); // D*A
+        normalize_addition(DA, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
 
-    cgbn_mont_sqr(_env, w, w, modulus, np0);    // AA
-    cgbn_mont_sqr(_env, u, u, modulus, np0);    // BB
-    normalize_addition(w, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
-    normalize_addition(u, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
+    cgbn_mont_sqr(_env, AA, w, modulus, np0);    // AA
+    cgbn_mont_sqr(_env, BB, u, modulus, np0);    // BB
+    normalize_addition(AA, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
+    normalize_addition(BB, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
     if (VERIFY_NORMALIZED) {
-        assert_normalized(t, modulus);
-        assert_normalized(v, modulus);
-        assert_normalized(w, modulus);
-        assert_normalized(u, modulus);
+        assert_normalized(CB, modulus);
+        assert_normalized(DA, modulus);
+        assert_normalized(AA, modulus);
+        assert_normalized(BB, modulus);
     }
 
     // q = aX is finalized
-    cgbn_mont_mul(_env, q, u, w, modulus, np0); // AA*BB
+    cgbn_mont_mul(_env, q, AA, BB, modulus, np0); // AA*BB
         normalize_addition(q, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(q, modulus);
 
-    if (cgbn_sub(_env, w, w, u)) // K = AA-BB
-        cgbn_add(_env, w, w, modulus);
+    if (cgbn_sub(_env, K, AA, BB)) // K = AA-BB
+        cgbn_add(_env, K, K, modulus);
 
     // By definition of d = (sigma / 2^32) % MODN
     // K = k*R
     // dK = d*k*R = (K * R * sigma) >> 32
-    cgbn_set(_env, t2, w);
-    special_mult_ui32(t2, d, modulus, np0, t3); // t2 = dK (using t3 as temp)
-        assert_normalized(t2, modulus);
+    cgbn_set(_env, dK, K);
+    special_mult_ui32(dK, d, modulus, np0); // dK = K*d
+        assert_normalized(dK, modulus);
 
-    cgbn_add(_env, u, u, t2); // BB + dK
+    cgbn_add(_env, u, BB, dK); // BB + dK
     normalize_addition(u, modulus);
     if (VERIFY_NORMALIZED) {
-        assert_normalized(w, modulus);
-        assert_normalized(t2, modulus);
+        assert_normalized(K, modulus);
+        assert_normalized(dK, modulus);
         assert_normalized(u, modulus);
     }
 
     // u = aY is finalized
-    cgbn_mont_mul(_env, u, w, u, modulus, np0); // K(BB+dK)
+    cgbn_mont_mul(_env, u, K, u, modulus, np0); // K(BB+dK)
         normalize_addition(u, modulus); // TODO: https://github.com/NVlabs/CGBN/issues/15
         assert_normalized(u, modulus);
 
-    cgbn_add(_env, w, v, t); // DA + CB
+    cgbn_add(_env, w, DA, CB); // DA + CB
     normalize_addition(w, modulus);
-    if (cgbn_sub(_env, v, v, t)) // DA - CB
+    if (cgbn_sub(_env, v, DA, CB)) // DA - CB
         cgbn_add(_env, v, v, modulus);
     if (VERIFY_NORMALIZED) {
         assert_normalized(w, modulus);
@@ -291,7 +294,7 @@ class curve_t {
         assert_normalized(v, modulus);
 
     // v = bY is finalized
-    cgbn_add(_env, v, v, v); // double
+    cgbn_shift_left(_env, v, v, 1); // double
     normalize_addition(v, modulus);
         assert_normalized(v, modulus);
   }
@@ -359,21 +362,6 @@ class curve_t {
     // P1_x, P1_y = (2,1)
     // 2P_x, 2P_y = (9, 64 * d + 8)
 
-    // N, B1
-    char N_str[] = {
-//        "2147483647", // B1=2    X = 2021483331
-                        // B1=10   X = 1250014575
-                        // B1=5000 X = 1409594724
-//        "1751180522011351" // B1=2    X = 1321180230405691
-                             // B1=1000 X = 949968091470892
-       // /* 2^971
-       "199584030953471981165637271303683856606745126043545754150254724243721189186896406578495"
-       "796549263570108934244684419249524397243798839359366073917179828483142032000567295108567"
-       "651753772144436298718265335674454392399333081045512087038888885526844804415750712090687"
-       "57560416423584952303440099278847" // B1=10000  X = 192674 ... 701818
-       // */
-    };
-
     mpz_t x, n;
     mpz_init(x);
     mpz_init(n);
@@ -402,7 +390,7 @@ class curve_t {
     }
 
     // N
-    mpz_set_str(n, N_str, 10);
+    mpz_set_str(n, run_data.n, 10);
 
     for(int index=0;index<run_data.curves;index++) {
         instance_t &instance = instances[index];
@@ -634,16 +622,22 @@ void run_test(metadata_t &run_data) {
 }
 
 int main(int argc, char** argv) {
+  if (argc != 4) {
+      printf("Usage: ecm_s1 SIGMA B1 N 2>results.txt\n");
+      exit(1);
+  }
+
   // TPI=8 is fastest, TPI=32 if only want to run a single curve
-  typedef ecm_params_t<8, 1024, 5> params;
+  typedef ecm_params_t<8, 1024 + 512, 5> params;
 
   metadata_t run_data;
-  run_data.B1 = argc <= 1 ? 100 : atol(argv[1]);
-  run_data.sigma = 2000;
+  run_data.sigma = atol(argv[1]);
+  run_data.B1 = atol(argv[2]);
+  run_data.n = argv[3];
   run_data.file = stderr;
 
-  run_data.curves = 1;
-  run_test<params>(run_data);
+  //run_data.curves = 1;
+  //run_test<params>(run_data);
 
   run_data.curves = 28*64;
   run_test<params>(run_data);
