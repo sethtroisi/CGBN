@@ -66,13 +66,14 @@ const char *cgbn_error_string(cgbn_error_report_t *report);
 
 #if defined(__CUDA_ARCH__)
   #if !defined(XMP_IMAD) && !defined(XMP_XMAD) && !defined(XMP_WMAD)
-     #if __CUDA_ARCH__<500
-       #define XMP_IMAD
-     #elif __CUDA_ARCH__<700
+    // TODO test and see what results are for my 1080ti
+    // #if __CUDA_ARCH__<500
+    //   #define XMP_IMAD
+    // #elif __CUDA_ARCH__<700
        #define XMP_XMAD
-     #else
-       #define XMP_WMAD
-     #endif
+    // #else
+    //   #define XMP_WMAD
+    // #endif
   #endif
   #include "cgbn_cuda.h"
 #elif defined(__GMP_H__)
