@@ -314,20 +314,20 @@ class core_t {
 #include "core_modular_inverse.cu"
 #include "core_mont.cu"
 
-/*
-#if defined(XMP_IMAD)
+
+//#if defined(XMP_IMAD)
   #include "core_mul_imad.cu"
   #include "core_mont_imad.cu"
-  */
+  #include "core_mont_diag_imad.cu"
+/*
 #if defined(XMP_XMAD)
   #include "core_mul_xmad.cu"
   #include "core_mont_xmad.cu"
-/*
 #elif defined(XMP_WMAD)
   #include "core_mul_wmad.cu"
   #include "core_mont_wmad.cu"
-  */
 #else
   #warning One of XMP_IMAD, XMP_XMAD, XMP_WMAD must be defined
 #endif
+  */
 
