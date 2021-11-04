@@ -160,7 +160,7 @@ template<uint32_t threads_per_instance, uint32_t threads_per_block> template<typ
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ cgbn_env_t<context_t, bits, syncable>::cgbn_env_t(const context_t &context) : _context(context) {
   if(_context.check_errors()) {
-    if(bits==0 || (bits & 0x1F)!=0) 
+    if(bits==0 || (bits & 0x1F)!=0)
       _context.report_error(cgbn_unsupported_size);
   }
 }
@@ -187,7 +187,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::set(cgbn_
       return;
     }
   }
-  
+
   sync=cgbn::core_t<cgbn_env_t>::sync_mask();
   cgbn::mpzero<LIMBS>(r._limbs);
   #pragma nounroll
@@ -214,16 +214,16 @@ template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::extract_bits(cgbn_t &r, const cgbn_t &a, const uint32_t start, const uint32_t len) const {
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
-  
+
   uint32_t local_len=len;
-  
+
   if(start>=BITS) {
     cgbn::mpzero<LIMBS>(r._limbs);
     return;
   }
-  
+
   local_len=cgbn::umin(local_len, BITS-start);
-  
+
   core::rotate_right(r._limbs, a._limbs, start);
   core::bitwise_mask_and(r._limbs, r._limbs, local_len);
 }
@@ -235,14 +235,14 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::insert_bi
 
   uint32_t local_len=len;
   uint32_t mask[LIMBS], temp[LIMBS];
-  
+
   if(start>=BITS) {
     cgbn::mpset<LIMBS>(r._limbs, a._limbs);
     return;
   }
-  
+
   local_len=cgbn::umin(local_len, BITS-start);
-  
+
   core::rotate_left(temp, value._limbs, start);
   core::bitwise_mask_copy(mask, start+local_len);
   core::bitwise_mask_xor(mask, mask, start);
@@ -278,7 +278,7 @@ __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::mul_u
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::div_ui32(cgbn_t &r, const cgbn_t &a, const uint32_t div) const {
   if(div==0) {
-    if(_context.check_errors()) 
+    if(_context.check_errors())
       _context.report_error(cgbn_division_by_zero_error);
     return 0;
   }
@@ -288,7 +288,7 @@ __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::div_u
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::rem_ui32(const cgbn_t &a, const uint32_t div) const {
   if(div==0) {
-    if(_context.check_errors()) 
+    if(_context.check_errors())
       _context.report_error(cgbn_division_by_zero_error);
     return 0;
   }
@@ -353,7 +353,7 @@ __device__ __forceinline__ int32_t cgbn_env_t<context_t, bits, syncable>::negate
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mul(cgbn_t &r, const cgbn_t &a, const cgbn_t &b) const {
   uint32_t add[LIMBS];
-  
+
   cgbn::mpzero<LIMBS>(add);
   cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mul(r._limbs, a._limbs, b._limbs, add);
 }
@@ -361,7 +361,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mul(cgbn_
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mul_high(cgbn_t &r, const cgbn_t &a, const cgbn_t &b) const {
   uint32_t add[LIMBS];
-  
+
   cgbn::mpzero<LIMBS>(add);
   cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mul_high(r._limbs, a._limbs, b._limbs, add);
 }
@@ -369,7 +369,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mul_high(
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sqr(cgbn_t &r, const cgbn_t &a) const {
   uint32_t add[LIMBS];
-  
+
   cgbn::mpzero<LIMBS>(add);
   cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mul(r._limbs, a._limbs, a._limbs, add);
 }
@@ -377,7 +377,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sqr(cgbn_
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sqr_high(cgbn_t &r, const cgbn_t &a) const {
   uint32_t add[LIMBS];
-  
+
   cgbn::mpzero<LIMBS>(add);
   cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mul_high(r._limbs, a._limbs, a._limbs, add);
 }
@@ -387,17 +387,17 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::div(cgbn_
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t num_low[LIMBS], num_high[LIMBS], denom_local[LIMBS];
   uint32_t shift, numthreads;
-  
+
   if(_context.check_errors()) {
     if(equals_ui32(denom, 0)) {
       _context.report_error(cgbn_division_by_zero_error);
       return;
     }
   }
-  
+
   // division of padded values is the same as division of unpadded valuess
   shift=core::clz(denom._limbs);
   core::rotate_left(denom_local, denom._limbs, shift);
@@ -464,10 +464,10 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sqrt(cgbn
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t shift, numthreads;
   uint32_t shifted[LIMBS];
-  
+
   shift=core::clz(a._limbs);
   if(shift==UNPADDED_BITS) {
     cgbn::mpzero<LIMBS>(s._limbs);
@@ -485,10 +485,10 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sqrt_rem(
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t shift, numthreads;
   uint32_t remainder[LIMBS], temp[LIMBS];
-  
+
   shift=core::clz(a._limbs);
   if(shift==UNPADDED_BITS) {
     cgbn::mpzero<LIMBS>(s._limbs);
@@ -517,7 +517,7 @@ __device__ __forceinline__ int32_t cgbn_env_t<context_t, bits, syncable>::compar
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mul_wide(cgbn_wide_t &r, const cgbn_t &a, const cgbn_t &b) const {
   uint32_t add[LIMBS];
-  
+
   cgbn::mpzero<LIMBS>(add);
   cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mul_wide(r._low._limbs, r._high._limbs, a._limbs, b._limbs, add);
 }
@@ -525,7 +525,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mul_wide(
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sqr_wide(cgbn_wide_t &r, const cgbn_t &a) const {
   uint32_t add[LIMBS];
-  
+
   cgbn::mpzero<LIMBS>(add);
   cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mul_wide(r._low._limbs, r._high._limbs, a._limbs, a._limbs, add);
 }
@@ -545,7 +545,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::div_wide(
       return;
     }
   }
-  
+
   shift=core::clz(denom._limbs);
   core::rotate_left(denom_local, denom._limbs, shift);
   core::rotate_left(num_high, num._high._limbs, shift-(UNPADDED_BITS-BITS));
@@ -570,7 +570,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::rem_wide(
       return;
     }
   }
-  
+
   shift=core::clz(denom._limbs);
   core::rotate_left(denom_local, denom._limbs, shift);
   core::rotate_left(num_high, num._high._limbs, shift-(UNPADDED_BITS-BITS));
@@ -616,7 +616,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sqrt_wide
 
   uint32_t clz_shift, shift, numthreads;
   uint32_t high_shifted[LIMBS], low_shifted[LIMBS];
-  
+
   clz_shift=core::clz(a._high._limbs);
   if(clz_shift==UNPADDED_BITS) {
     clz_shift=core::clz(a._low._limbs);
@@ -873,7 +873,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sub_ui32(
   #pragma unroll
   for(int32_t index=1;index<LIMBS;index++)
     accumulator._limbs[index]=chain.sub(accumulator._limbs[index], 0);
-    
+
   if(PADDING==0)
     accumulator._carry=chain.add(accumulator._carry, (group_thread==TPI-1) ? 0xFFFFFFFF : 0);
   else
@@ -915,7 +915,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::sub(cgbn_
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::binary_inverse(cgbn_t &r, const cgbn_t &x) const {
   uint32_t low;
-  
+
   if(_context.check_errors()) {
     low=cgbn::core_t<cgbn_env_t>::get_ui32(x._limbs);
     if((low & 0x01)==0) {
@@ -930,7 +930,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::binary_in
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ bool cgbn_env_t<context_t, bits, syncable>::modular_inverse(cgbn_t &r, const cgbn_t &x, const cgbn_t &m) const {
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
-  
+
   return cgbn::core_t<unpadded>::modular_inverse(r._limbs, x._limbs, m._limbs);
 }
 
@@ -941,7 +941,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::modular_p
   int32_t     bit, m_clz, last;
 
   // FIX FIX FIX -- errors get checked again and again
-  
+
   if(_context.check_errors()) {
     if(compare(a, m)>=0) {
       _context.report_error(cgbn_division_overflow_error);
@@ -972,7 +972,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::modular_p
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::gcd(cgbn_t &r, const cgbn_t &a, const cgbn_t &b) const {
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
-  
+
   cgbn::core_t<unpadded>::gcd(r._limbs, a._limbs, b._limbs);
 }
 
@@ -982,12 +982,12 @@ __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::bn2mo
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t num_low[LIMBS], num_high[LIMBS], n_local[LIMBS];
   uint32_t shift, low;
 
   low=core::get_ui32(n._limbs);
-  
+
   if(_context.check_errors()) {
     if((low & 0x01)==0) {
       _context.report_error(cgbn_modulus_not_odd_error);
@@ -1019,7 +1019,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mont2bn(c
   cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mont_reduce_wide(bn._limbs, mont._limbs, zeros, n._limbs, np0, true);
 
   // handle the case of res==n
-  if(cgbn::core_t<cgbn_env_t>::equals(bn._limbs, n._limbs))  
+  if(cgbn::core_t<cgbn_env_t>::equals(bn._limbs, n._limbs))
     cgbn::mpzero<LIMBS>(bn._limbs);
 }
 
@@ -1030,7 +1030,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mont_mul(
 
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mont_sqr(cgbn_t &r, const cgbn_t &a, const cgbn_t &n, const uint32_t np0) const {
-  cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mont_mul(r._limbs, a._limbs, a._limbs, n._limbs, np0);
+  cgbn::core_singleton_t<cgbn_env_t, LIMBS>::mont_sqr(r._limbs, a._limbs, n._limbs, np0);
 }
 
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
@@ -1038,23 +1038,23 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::mont_redu
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t low[LIMBS], high[LIMBS];
-  
+
   cgbn::mpset<LIMBS>(low, a._low._limbs);
   cgbn::mpset<LIMBS>(high, a._high._limbs);
-  
+
   if(PADDING!=0) {
     core::rotate_right(high, high, UNPADDED_BITS-BITS);
     core::bitwise_mask_select(low, high, low, BITS);
     core::bitwise_mask_and(high, high, BITS);
   }
-  
+
   // mont_reduce_wide returns 0<=res<=n
   singleton::mont_reduce_wide(r._limbs, low, high, n._limbs, np0, false);
 
   // handle the case of res==n
-  if(core::equals(r._limbs, n._limbs))  
+  if(core::equals(r._limbs, n._limbs))
     cgbn::mpzero<LIMBS>(r._limbs);
 }
 
@@ -1063,7 +1063,7 @@ __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::barre
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t shift, shifted[LIMBS], low[LIMBS], high[LIMBS];
 
   shift=core::clz(denom._limbs);
@@ -1078,13 +1078,13 @@ __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::barre
     return 0xFFFFFFFF;
 
   core::rotate_left(shifted, denom._limbs, shift);
-  
+
   #pragma unroll
   for(int32_t index=0;index<LIMBS;index++) {
     low[index]=0xFFFFFFFF;
     high[index]=~shifted[index];  // high=0xFFFFFFFF - shifted[index]
   }
-  
+
   singleton::div_wide(approx._limbs, low, high, shifted, TPI);
   return shift;
 }
@@ -1094,7 +1094,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t sync, group_thread=threadIdx.x & TPI-1;
   uint32_t low[LIMBS], high[LIMBS], quotient[LIMBS], zero[LIMBS];
   uint32_t word, c, sub=0;
@@ -1103,18 +1103,18 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   core::shift_right(high, num._limbs, UNPADDED_BITS-denom_clz);
   cgbn::mpzero<LIMBS>(zero);
   singleton::mul_high(quotient, high, approx._limbs, zero);
-  
+
   c=cgbn::mpadd<LIMBS>(quotient, quotient, high);
   c+=cgbn::mpadd32<LIMBS>(quotient, quotient, group_thread==0 ? 3 : 0);
   c=core::resolve_add(c, quotient);
-  
+
   if(c!=0) {
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++)
       quotient[index]=0xFFFFFFFF;
   }
   singleton::mul_wide(low, high, denom._limbs, quotient, zero);
-  
+
   word=-__shfl_sync(sync, high[0], 0, TPI);
   c=cgbn::mpsub<LIMBS>(low, num._limbs, low);
   word-=core::fast_propagate_sub(c, low);
@@ -1131,7 +1131,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_r
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t sync, group_thread=threadIdx.x & TPI-1;
   uint32_t low[LIMBS], high[LIMBS], quotient[LIMBS], zero[LIMBS];
   uint32_t word, c;
@@ -1140,11 +1140,11 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_r
   core::shift_right(high, num._limbs, UNPADDED_BITS-denom_clz);
   cgbn::mpzero<LIMBS>(zero);
   singleton::mul_high(quotient, high, approx._limbs, zero);
-  
+
   c=cgbn::mpadd<LIMBS>(quotient, quotient, high);
   c+=cgbn::mpadd32<LIMBS>(quotient, quotient, group_thread==0 ? 3 : 0);
   c=core::resolve_add(c, quotient);
-  
+
   if(c!=0) {
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++)
@@ -1167,7 +1167,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t sync, group_thread=threadIdx.x & TPI-1;
   uint32_t low[LIMBS], high[LIMBS], quotient[LIMBS], zero[LIMBS];
   uint32_t word, c, sub=0;
@@ -1176,11 +1176,11 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   core::shift_right(high, num._limbs, UNPADDED_BITS-denom_clz);
   cgbn::mpzero<LIMBS>(zero);
   singleton::mul_high(quotient, high, approx._limbs, zero);
-  
+
   c=cgbn::mpadd<LIMBS>(quotient, quotient, high);
   c+=cgbn::mpadd32<LIMBS>(quotient, quotient, group_thread==0 ? 3 : 0);
   c=core::resolve_add(c, quotient);
-  
+
   if(c!=0) {
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++)
@@ -1206,7 +1206,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   typedef cgbn::core_t<unpadded> core_unpadded;
   typedef cgbn::core_t<cgbn_env_t> core_padded;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-  
+
   uint32_t sync, group_thread=threadIdx.x & TPI-1, group_base=group_thread*LIMBS;
   uint32_t low[LIMBS], high[LIMBS], quotient[LIMBS], zero[LIMBS];
   uint32_t word, c, sub=0;
@@ -1225,11 +1225,11 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   core_unpadded::bitwise_mask_select(high, high, low, denom_clz-(UNPADDED_BITS-BITS));
   cgbn::mpzero<LIMBS>(zero);
   singleton::mul_high(quotient, high, approx._limbs, zero);
-  
+
   c=cgbn::mpadd<LIMBS>(quotient, quotient, high);
   c+=cgbn::mpadd32<LIMBS>(quotient, quotient, group_thread==0 ? 3 : 0);
   c=core_padded::resolve_add(c, quotient);
-  
+
   if(c!=0) {
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++)
@@ -1246,7 +1246,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
     word=word-__shfl_sync(sync, low[PAD_LIMB], PAD_THREAD, TPI);
     core_padded::clear_padding(low);
   }
-    
+
   c=cgbn::mpsub<LIMBS>(low, num._low._limbs, low);
   word-=core_padded::fast_propagate_sub(c, low);
   while(word!=0) {
@@ -1263,7 +1263,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_r
   typedef cgbn::core_t<unpadded> core_unpadded;
   typedef cgbn::core_t<cgbn_env_t> core_padded;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-    
+
   uint32_t sync, group_thread=threadIdx.x & TPI-1, group_base=group_thread*LIMBS;
   uint32_t low[LIMBS], high[LIMBS], quotient[LIMBS], zero[LIMBS];
   uint32_t word, c;
@@ -1282,11 +1282,11 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_r
   core_unpadded::bitwise_mask_select(high, high, low, denom_clz-(UNPADDED_BITS-BITS));
   cgbn::mpzero<LIMBS>(zero);
   singleton::mul_high(quotient, high, approx._limbs, zero);
-  
+
   c=cgbn::mpadd<LIMBS>(quotient, quotient, high);
   c+=cgbn::mpadd32<LIMBS>(quotient, quotient, group_thread==0 ? 3 : 0);
   c=core_padded::resolve_add(c, quotient);
-  
+
   if(c!=0) {
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++)
@@ -1303,7 +1303,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_r
     word=word-__shfl_sync(sync, low[PAD_LIMB], PAD_THREAD, TPI);
     core_padded::clear_padding(low);
   }
-    
+
   c=cgbn::mpsub<LIMBS>(low, num._low._limbs, low);
   word-=core_padded::fast_propagate_sub(c, low);
   while(word!=0) {
@@ -1319,7 +1319,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   typedef cgbn::core_t<unpadded> core_unpadded;
   typedef cgbn::core_t<cgbn_env_t> core_padded;
   typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
-    
+
   uint32_t sync, group_thread=threadIdx.x & TPI-1, group_base=group_thread*LIMBS;
   uint32_t low[LIMBS], high[LIMBS], quotient[LIMBS], zero[LIMBS];
   uint32_t word, c, sub=0;
@@ -1338,11 +1338,11 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
   core_unpadded::bitwise_mask_select(high, high, low, denom_clz-(UNPADDED_BITS-BITS));
   cgbn::mpzero<LIMBS>(zero);
   singleton::mul_high(quotient, high, approx._limbs, zero);
-  
+
   c=cgbn::mpadd<LIMBS>(quotient, quotient, high);
   c+=cgbn::mpadd32<LIMBS>(quotient, quotient, group_thread==0 ? 3 : 0);
   c=core_padded::resolve_add(c, quotient);
-  
+
   if(c!=0) {
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++)
@@ -1359,7 +1359,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::barrett_d
     word=word-__shfl_sync(sync, low[PAD_LIMB], PAD_THREAD, TPI);
     core_padded::clear_padding(low);
   }
-    
+
   c=cgbn::mpsub<LIMBS>(low, num._low._limbs, low);
   word-=core_padded::fast_propagate_sub(c, low);
   while(word!=0) {
@@ -1381,7 +1381,7 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::load(cgbn
   for(limb=0;limb<LIMBS;limb++) {
     if(PADDING!=0) {
       r._limbs[limb]=0;
-      if(group_thread*LIMBS<BITS/32-limb) 
+      if(group_thread*LIMBS<BITS/32-limb)
         r._limbs[limb]=address->_limbs[group_thread*LIMBS + limb];
     }
     else
