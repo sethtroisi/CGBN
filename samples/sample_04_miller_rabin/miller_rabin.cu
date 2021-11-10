@@ -25,10 +25,14 @@ IN THE SOFTWARE.
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "chrono"
+
 #include <cuda.h>
 #include <gmp.h>
 #include "cgbn/cgbn.h"
 #include "../utility/support.h"
+
+using namespace std;
 
 // For this example, there are quite a few template parameters that are used to generate the actual code.
 // In order to simplify passing many parameters, we use the same approach as the CGBN library, which is to
@@ -49,7 +53,7 @@ template<uint32_t tpi, uint32_t bits, uint32_t window_bits>
 class mr_params_t {
   public:
   // parameters used by the CGBN context
-  static const uint32_t TPB=0;                     // get TPB from blockDim.x  
+  static const uint32_t TPB=0;                     // get TPB from blockDim.x
   static const uint32_t MAX_ROTATION=4;            // good default value
   static const uint32_t SHM_LIMIT=0;               // no shared mem available
   static const bool     CONSTANT_TIME=false;       // constant time implementations aren't available yet
@@ -69,7 +73,7 @@ class miller_rabin_t {
   // Definition of instance_t type.  Note, the size of instance_t is not a multiple of 128-bytes, so array loads and stores
   // will not be 128-byte aligned.  It's ok in this example, because there are so few loads and stores compared to compute,
   // but using non-128-byte aligned types could be a performance limiter for different load/store/compute balances.
-  
+
   typedef struct {
     cgbn_mem_t<params::BITS> candidate;
     uint32_t                 passed;
@@ -84,7 +88,7 @@ class miller_rabin_t {
   context_t _context;
   env_t     _env;
   int32_t   _instance;
-  
+
   __device__ __forceinline__ miller_rabin_t(cgbn_monitor_t monitor, cgbn_error_report_t *report, int32_t instance) : _context(monitor, report, (uint32_t)instance), _env(_context), _instance(instance) {
   }
 
@@ -100,12 +104,12 @@ class miller_rabin_t {
     // compute x^0 (in Montgomery space, this is just 2^BITS - modulus)
     cgbn_negate(_env, t, modulus);
     cgbn_store(_env, window+0, t);
-    
+
     // convert x into Montgomery space, store into window table
     np0=cgbn_bn2mont(_env, x, x, modulus);
     cgbn_store(_env, window+1, x);
     cgbn_set(_env, t, x);
-    
+
     // compute x^2, x^3, ... x^(2^window_bits-1), store into window table
     #pragma nounroll
     for(index=2;index<(1<<window_bits);index++) {
@@ -125,25 +129,25 @@ class miller_rabin_t {
       position=position-offset;
     index=cgbn_extract_bits_ui32(_env, power, position, window_bits);
     cgbn_load(_env, x, window+index);
-    
+
     // process the remaining exponent chunks
     while(position>0) {
       // square the result window_bits times
       #pragma nounroll
       for(int sqr_count=0;sqr_count<window_bits;sqr_count++)
         cgbn_mont_sqr(_env, x, x, modulus, np0);
-      
+
       // multiply by next exponent chunk
       position=position-window_bits;
       index=cgbn_extract_bits_ui32(_env, power, position, window_bits);
       cgbn_load(_env, t, window+index);
       cgbn_mont_mul(_env, x, x, t, modulus, np0);
     }
-    
+
     // we've processed the exponent now, convert back to normal space
     cgbn_mont2bn(_env, x, x, modulus, np0);
   }
-  
+
   __device__ __forceinline__ uint32_t miller_rabin(const bn_t &candidate, uint32_t *primes, uint32_t prime_count) {
     int       k, trailing, count;
     bn_t      x, power, minus_one;
@@ -152,10 +156,10 @@ class miller_rabin_t {
     cgbn_sub_ui32(_env, power, candidate, 1);
     trailing=cgbn_ctz(_env, power);
     cgbn_rotate_right(_env, power, power, trailing);
-    
+
     for(k=0;k<prime_count;k++) {
       cgbn_set_ui32(_env, x, primes[k]);
-      powm(x, power, candidate); 
+      powm(x, power, candidate);
       cgbn_sub_ui32(_env, minus_one, candidate, 1);
       if(!cgbn_equals_ui32(_env, x, 1) && !cgbn_equals(_env, x, minus_one)) {
         // x is neither 1, nor candidate-1
@@ -177,39 +181,58 @@ class miller_rabin_t {
     }
     return prime_count;
   }
-  
+
   __host__ static instance_t *generate_instances(uint32_t count) {
     instance_t *instances=(instance_t *)malloc(sizeof(instance_t)*count);
     int         index;
-    
+
+    /*
+    mpz_t n;
+    mpz_init(n);
+    mpz_set_str(n,
+        "0x13e0ab623eecd3771fc8f7306d00dc2475262f183746"
+        "b69447ac48f39c61f3f097f6a4060fc2708e7a43a0ee2f"
+        "29ab3908fd7426fc40b3485eb71ae3bee43aa60fe3d6dc"
+        "b79fd846bfd03232de416fad5a576015ec3c75787cc907"
+        "35a65feef58500ee3e85d331bde59f1a693cf11c219ae7"
+        "82fe06d1f66b2936f139f8c23019a304c9545d6a4e9dfb"
+        "6ad477b7c1a5a7e67ac0c4605ba7a7539dd43f09b67c70"
+        "4b88d30eb6b6257d65f695", 0);
+        */
+
     for(index=0;index<count;index++) {
+      //from_mpz(n, instances[index].candidate._limbs, params::BITS/32);
+      //mpz_add_ui(n, n, 2);
+
       random_words(instances[index].candidate._limbs, params::BITS/32);
       instances[index].candidate._limbs[0] |= 1;
       instances[index].passed=0;
     }
     return instances;
   }
-  
+
   __host__ static void verify_results(instance_t *instances, uint32_t instance_count, uint32_t *primes, uint32_t prime_count) {
     int   index, total=0;
     mpz_t candidate;
     bool  gmp_prime, xmp_prime, match=true;
 
     mpz_init(candidate);
-    
+
     for(index=0;index<instance_count;index++) {
       to_mpz(candidate, instances[index].candidate._limbs, params::BITS/32);
-      gmp_prime=(mpz_probab_prime_p(candidate, prime_count)!=0);
-      
       xmp_prime=(instances[index].passed==prime_count);
-      
-      if(gmp_prime!=xmp_prime) {
-        printf("MISMATCH AT INDEX: %d\n", index);
-        printf("prime count=%d\n", instances[index].passed);
-        match=false;
-      }
-      if(xmp_prime)
+      if (xmp_prime) {
         total++;
+
+        gmp_prime=(mpz_probab_prime_p(candidate, prime_count)!=0);
+        printf("N + %d\n", index);
+
+        if(gmp_prime!=xmp_prime) {
+          printf("MISMATCH AT INDEX: %d\n", index);
+          printf("prime count=%d\n", instances[index].passed);
+          match=false;
+        }
+      }
     }
     if(match)
       printf("All results matched\n");
@@ -222,33 +245,33 @@ class miller_rabin_t {
 template<class params>
 __global__ void kernel_miller_rabin(cgbn_error_report_t *report, typename miller_rabin_t<params>::instance_t *instances, uint32_t instance_count, uint32_t *primes, uint32_t prime_count) {
   int32_t instance=(blockIdx.x*blockDim.x + threadIdx.x)/params::TPI;
-  
+
   if(instance>=instance_count)
     return;
 
   typedef miller_rabin_t<params> local_mr_t;
- 
+
   local_mr_t                     mr(cgbn_report_monitor, report, instance);
   typename local_mr_t::bn_t      candidate;
   uint32_t                       passed;
-  
+
   cgbn_load(mr._env, candidate, &(instances[instance].candidate));
-      
+
   passed=mr.miller_rabin(candidate, primes, prime_count);
-  
+
   instances[instance].passed=passed;
 }
 
 uint32_t *generate_primes(uint32_t count) {
   uint32_t *list=(uint32_t *)malloc(sizeof(uint32_t)*count);
   int       test, current, index;
-  
+
   // generate a list of primes
   list[0]=2;
   current=3;
   index=1;
   while(index<count) {
-    for(test=1;test<index;test++) 
+    for(test=1;test<index;test++)
       if(current%list[test]==0)
         break;
     if(test==index)
@@ -259,45 +282,62 @@ uint32_t *generate_primes(uint32_t count) {
 }
 
 template<class params>
-void run_test(uint32_t instance_count, uint32_t prime_count) {
+void run_and_time_test(uint32_t instance_count, uint32_t prime_count) {
   typedef typename miller_rabin_t<params>::instance_t instance_t;
-  
+
   instance_t          *instances, *gpuInstances;
   cgbn_error_report_t *report;
   uint32_t            *primes, *gpuPrimes;
   int32_t              TPB=(params::TPB==0) ? 128 : params::TPB;
   int32_t              TPI=params::TPI, IPB=TPB/TPI;
-  
+
   printf("Genereating primes and instances ...\n");
   primes=generate_primes(prime_count);
   instances=miller_rabin_t<params>::generate_instances(instance_count);
-  
+
+  auto start_t = std::chrono::high_resolution_clock::now();
+
   printf("Copying primes and instances to the GPU ...\n");
   CUDA_CHECK(cudaSetDevice(0));
+
+  // Can lower host thread CPU usage from 100% to 0
+  CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceBlockingSync));
+
   CUDA_CHECK(cudaMalloc((void **)&gpuPrimes, sizeof(uint32_t)*prime_count));
   CUDA_CHECK(cudaMemcpy(gpuPrimes, primes, sizeof(uint32_t)*prime_count, cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMalloc((void **)&gpuInstances, sizeof(instance_t)*instance_count));
   CUDA_CHECK(cudaMemcpy(gpuInstances, instances, sizeof(instance_t)*instance_count, cudaMemcpyHostToDevice));
-  
+
   // create a cgbn_error_report for CGBN to report back errors
-  CUDA_CHECK(cgbn_error_report_alloc(&report)); 
-  
+  CUDA_CHECK(cgbn_error_report_alloc(&report));
+
   printf("Running GPU kernel ...\n");
 
   // launch kernel with blocks=ceil(instance_count/IPB) and threads=TPB
   kernel_miller_rabin<params><<<(instance_count+IPB-1)/IPB, TPB>>>(report, gpuInstances, instance_count, gpuPrimes, prime_count);
 
+  printf("Waiting for Sync ...\n");
+
+
   // error report uses managed memory, so we sync the device (or stream) and check for cgbn errors
   CUDA_CHECK(cudaDeviceSynchronize());
   CGBN_CHECK(report);
-    
+
   // copy the instances back from gpuMemory
   printf("Copying results back to CPU ...\n");
   CUDA_CHECK(cudaMemcpy(instances, gpuInstances, sizeof(instance_t)*instance_count, cudaMemcpyDeviceToHost));
-  
-  printf("Verifying the results ...\n");
-  miller_rabin_t<params>::verify_results(instances, instance_count, primes, prime_count);
-  
+
+
+  auto end_t = std::chrono::high_resolution_clock::now();
+  double diff = std::chrono::duration<float>(end_t - start_t).count();
+  printf("Testing %d candidates (%d BITS) for %d rounds took %.4f = %.0f candidates/second\n",
+          instance_count, params::BITS, prime_count, diff, instance_count / diff);
+
+  printf("Verifying the results ...\n\n");
+  //miller_rabin_t<params>::verify_results(instances, instance_count, primes, prime_count);
+
+
+
   // clean up
   free(primes);
   free(instances);
@@ -308,10 +348,13 @@ void run_test(uint32_t instance_count, uint32_t prime_count) {
 
 
 #define INSTANCES 100000
-#define PRIMES 20
+#define PRIMES 1
 
 int main() {
-  typedef mr_params_t<32, 1024, 5> params;
-  
-  run_test<params>(INSTANCES, PRIMES);
+  typedef mr_params_t<8, 2048, 5> params;
+
+  int RUNS = 10;
+  for (int i = 0; i < RUNS; i++) {
+    run_and_time_test<params>(INSTANCES, PRIMES);
+  }
 }

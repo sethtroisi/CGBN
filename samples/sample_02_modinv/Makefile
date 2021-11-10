@@ -30,8 +30,8 @@ maxwell:
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_50 modinv_odd_faster.cu -o mo_faster -lgmp
 
 pascal:
-	nvcc $(INC) $(LIB) -I../../include -arch=sm_60 modinv_odd.cu -o mo -lgmp
-	nvcc $(INC) $(LIB) -I../../include -arch=sm_60 modinv_odd_faster.cu -o mo_faster -lgmp
+	nvcc $(INC) $(LIB) -I../../include -arch=sm_61 modinv_odd.cu -o mo -lgmp
+	nvcc $(INC) $(LIB) -I../../include -arch=sm_61 modinv_odd_faster.cu -o mo_faster -lgmp
 
 volta: 
 	nvcc $(INC) $(LIB) -I../../include -arch=sm_70 modinv_odd.cu -o mo -lgmp

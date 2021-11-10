@@ -39,7 +39,7 @@ maxwell: libgtest.a
 	nvcc $(INC) $(LIB) -I$(GTEST_DIR)/include -I../include -std=c++11 -arch=sm_50 tester.cu libgtest.a -lgmp -Xcompiler -fopenmp -o tester
 
 pascal: libgtest.a
-	nvcc $(INC) $(LIB) -I$(GTEST_DIR)/include -I../include -std=c++11 -arch=sm_60 tester.cu libgtest.a -lgmp -Xcompiler -fopenmp -o tester
+	nvcc $(INC) $(LIB) -I$(GTEST_DIR)/include -I../include -std=c++11 -arch=sm_61 tester.cu libgtest.a -lgmp -Xcompiler -fopenmp -o tester
 
 volta: libgtest.a
 	nvcc $(INC) $(LIB) -I$(GTEST_DIR)/include -I../include -std=c++11 -arch=sm_70 tester.cu libgtest.a -lgmp -Xcompiler -fopenmp -o tester
