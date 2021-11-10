@@ -34,18 +34,18 @@ typedef enum {
 template<class core, dlimbs_algs_t implementation>
 class dispatch_dlimbs_t;
 
-template<class core> 
+template<class core>
 class dispatch_dlimbs_t<core, dlimbs_algs_common> {
   public:
   static const uint32_t TPI=core::TPI;
   static const uint32_t LIMBS=core::LIMBS;
   static const uint32_t DLIMBS=core::DLIMBS;
   static const uint32_t LIMB_OFFSET=DLIMBS*TPI-LIMBS;
-  
+
   __device__ __forceinline__ static void dlimbs_scatter(uint32_t r[DLIMBS], const uint32_t x[LIMBS], const uint32_t source_thread) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t t;
-    
+
     mpzero<DLIMBS>(r);
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++) {
@@ -53,11 +53,11 @@ class dispatch_dlimbs_t<core, dlimbs_algs_common> {
       r[(index+LIMB_OFFSET)%DLIMBS]=(group_thread==(index+LIMB_OFFSET)/DLIMBS) ? t : r[(index+LIMB_OFFSET)%DLIMBS];
     }
   }
-  
+
   __device__ __forceinline__ static void dlimbs_gather(uint32_t r[LIMBS], const uint32_t x[DLIMBS], const uint32_t destination_thread) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t t;
-    
+
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++) {
       t=__shfl_sync(sync, x[(index+LIMB_OFFSET)%DLIMBS], (index+LIMB_OFFSET)/DLIMBS, TPI);
@@ -67,9 +67,9 @@ class dispatch_dlimbs_t<core, dlimbs_algs_common> {
 
   __device__ __forceinline__ static void dlimbs_all_gather(uint32_t r[LIMBS], const uint32_t x[DLIMBS]) {
     uint32_t sync=core::sync_mask();
-    
+
     #pragma unroll
-    for(int32_t index=0;index<LIMBS;index++) 
+    for(int32_t index=0;index<LIMBS;index++)
       r[index]=__shfl_sync(sync, x[(index+LIMB_OFFSET)%DLIMBS], (index+LIMB_OFFSET)/DLIMBS, TPI);
   }
 };
@@ -83,22 +83,22 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
   static const uint32_t LIMB_OFFSET=DLIMBS*TPI-LIMBS;
 
   // these algorithms require that LIMBS<=TPI/2
-  
+
   __device__ __forceinline__ static void dlimbs_approximate(uint32_t approx[DLIMBS], const uint32_t denom[DLIMBS]) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t x, d0, d1, x0, x1, x2, est, a, h, l;
     int32_t  c, top;
-      
+
     // computes (beta^2 - 1) / denom - beta, where beta=1<<32*LIMBS
-    
+
     x=0xFFFFFFFF-denom[0];
-    
+
     d1=__shfl_sync(sync, denom[0], TPI-1, TPI);
     d0=__shfl_sync(sync, denom[0], TPI-2, TPI);
-      
+
     approx[0]=0;
     a=uapprox(d1);
-  
+
     #pragma nounroll
     for(int32_t thread=LIMBS-1;thread>=0;thread--) {
       x0=__shfl_sync(sync, x, TPI-3, TPI);
@@ -111,7 +111,7 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
 
       x=sub_cc(x, h);
       c=subc(0, 0);  // thread TPI-1 is zero
-    
+
       top=__shfl_sync(sync, x, TPI-1, TPI);
       x=__shfl_sync(sync, x, threadIdx.x-1, TPI);
       c=__shfl_sync(sync, c, threadIdx.x-1, TPI);
@@ -129,18 +129,18 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
       approx[0]=(group_thread==thread+TPI-LIMBS) ? est : approx[0];
     }
   }
-  
+
   __device__ __forceinline__ static uint32_t dlimbs_sqrt_rem_wide(uint32_t s[DLIMBS], uint32_t r[DLIMBS], const uint32_t lo[DLIMBS], const uint32_t hi[DLIMBS]) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t x, x0, x1, t0, t1, divisor, approx, p, q, c;
-  
+
     // computes s=sqrt(x), r=x-s^2, where x=(hi<<32*LIMBS) + lo
-    
+
     t0=__shfl_sync(sync, lo[0], threadIdx.x+LIMBS, TPI);
     x=hi[0] | t0;
     x0=__shfl_sync(sync, x, TPI-2, TPI);
     x1=__shfl_sync(sync, x, TPI-1, TPI);
-  
+
     divisor=usqrt(x0, x1);
     approx=uapprox(divisor);
 
@@ -163,7 +163,7 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
       x=sub_cc(x, p);
       c=subc(0, 0);
       core::fast_propagate_sub(c, x);
-    
+
       x1=__shfl_sync(sync, x, TPI-1, TPI)-q;  // we subtract q because of the silent 1 at the top of s
       x=__shfl_up_sync(sync, x, 1, TPI);
       p=madlo(q, s[0], 0);
@@ -174,13 +174,13 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
       while(0>(int32_t)x1) {
         x1++;
         q--;
-      
+
         // correction step: add q and s
         x=add_cc(x, (group_thread==index) ? q : 0);
         c=addc(0, 0);
         x=add_cc(x, s[0]);
         c=addc(c, 0);
-      
+
         x1+=core::resolve_add(c, x);
 
         // update s
@@ -200,12 +200,12 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t t, c;
     uint64_t w;
-  
+
     // computes q=(x*approx>>32*LIMBS) + x + 3
     //          q=min(q, (1<<32*LIMBS)-1);
-    // 
-    // Notes:   leaves junk in lower words of q 
-    
+    //
+    // Notes:   leaves junk in lower words of q
+
     w=0;
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++) {
@@ -214,11 +214,11 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
       t=__shfl_sync(sync, ulow(w), threadIdx.x+1, TPI);   // half size: take advantage of zero wrapping
       w=(w>>32)+t;
     }
-    
+
     // increase the estimate by 3
     t=(group_thread==TPI-LIMBS) ? 3 : 0;
     w=w + t + x[0];
-    
+
     q[0]=ulow(w);
     c=uhigh(w);
     if(core::resolve_add(c, q[0])!=0)
@@ -241,11 +241,11 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
     t=__shfl_down_sync(sync, x[0], 1, TPI);
     t=(group_thread==TPI-1) ? top : t;
     low=uright_wrap(x[0], t, 1);
-    
+
     // if we're exactly half the size, need to clear out low limb
     if(TPI==2*LIMBS)
       low=(group_thread>=LIMBS) ? low : 0;
-      
+
     // estimate is in low
     w=0;
     #pragma unroll
@@ -255,7 +255,7 @@ class dispatch_dlimbs_t<core, dlimbs_algs_half> {
       t=__shfl_sync(sync, ulow(w), threadIdx.x+1, TPI);   // half size: take advantage of zero wrapping
       w=(w>>32)+t;
     }
-  
+
     // increase the estimate by 4 -- because we might have cleared low bit, estimate can be off by 4
     t=(group_thread==TPI-LIMBS) ? 4 : 0;
     w=w + t + low;
@@ -277,22 +277,21 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
   static const uint32_t LIMB_OFFSET=DLIMBS*TPI-LIMBS;
 
   // These algorithms are used then LIMBS<=TPI.  Almost the same as the half size ones, few tweaks here and there.
-  
+
   __device__ __forceinline__ static void dlimbs_approximate(uint32_t approx[DLIMBS], const uint32_t denom[DLIMBS]) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t x, d0, d1, x0, x1, x2, est, a, h, l;
     int32_t  c, top;
 
     // computes (beta^2 - 1) / denom - beta, where beta=1<<32*LIMBS
-    
     x=0xFFFFFFFF-denom[0];
-    
+
     d1=__shfl_sync(sync, denom[0], TPI-1, TPI);
     d0=__shfl_sync(sync, denom[0], TPI-2, TPI);
-      
+
     approx[0]=0;
     a=uapprox(d1);
-  
+
     #pragma nounroll
     for(int32_t thread=LIMBS-1;thread>=0;thread--) {
       x0=__shfl_sync(sync, x, TPI-3, TPI);
@@ -305,7 +304,7 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
 
       x=sub_cc(x, h);
       c=subc(0, 0);  // thread TPI-1 is zero
-    
+
       top=__shfl_sync(sync, x, TPI-1, TPI);
       x=__shfl_up_sync(sync, x, 1, TPI);
       c=__shfl_sync(sync, c, threadIdx.x-1, TPI);
@@ -324,13 +323,13 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
       approx[0]=(group_thread==thread+TPI-LIMBS) ? est : approx[0];
     }
   }
-  
+
   __device__ __forceinline__ static uint32_t dlimbs_sqrt_rem_wide(uint32_t s[DLIMBS], uint32_t r[DLIMBS], const uint32_t lo[DLIMBS], const uint32_t hi[DLIMBS]) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t x, x0, x1, t0, t1, divisor, approx, p, q, c, low;
-  
+
     // computes s=sqrt(x), r=x-s^2, where x=(hi<<32*LIMBS) + lo
-    
+
     low=lo[0];
     x=hi[0];
     if(TPI!=LIMBS) {
@@ -339,7 +338,7 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
     }
     x0=__shfl_sync(sync, x, TPI-2, TPI);
     x1=__shfl_sync(sync, x, TPI-1, TPI);
-  
+
     divisor=usqrt(x0, x1);
     approx=uapprox(divisor);
 
@@ -363,12 +362,12 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
       x=sub_cc(x, p);
       c=subc(0, 0);
       core::fast_propagate_sub(c, x);
-    
+
       x1=__shfl_sync(sync, x, TPI-1, TPI)-q;  // we subtract q because of the silent 1 at the top of s
       t0=__shfl_sync(sync, low, index, TPI);
       x=__shfl_up_sync(sync, x, 1, TPI);
       x=(group_thread==0) ? t0 : x;
-    
+
       p=madlo(q, s[0], 0);
       x=sub_cc(x, p);
       c=subc(0, 0);
@@ -377,13 +376,13 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
       while(0>(int32_t)x1) {
         x1++;
         q--;
-      
+
         // correction step: add q and s
         x=add_cc(x, (group_thread==index) ? q : 0);
         c=addc(0, 0);
         x=add_cc(x, s[0]);
         c=addc(c, 0);
-      
+
         x1+=core::resolve_add(c, x);
 
         // update s
@@ -403,11 +402,11 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t t, c;
     uint64_t w;
-  
+
     // computes q=(x*approx>>32*LIMBS) + x + 3
     //          q=min(q, (1<<32*LIMBS)-1);
-    // 
-    // Notes:   leaves junk in lower words of q 
+    //
+    // Notes:   leaves junk in lower words of q
 
     w=0;
     #pragma unroll
@@ -418,11 +417,11 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
       t=(group_thread==TPI-1) ? 0 : t;
       w=(w>>32)+t;
     }
-    
+
     // increase the estimate by 3
     t=(group_thread==TPI-LIMBS) ? 3 : 0;
     w=w + t + x[0];
-    
+
     q[0]=ulow(w);
     c=uhigh(w);
     if(core::resolve_add(c, q[0])!=0)
@@ -445,7 +444,7 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
     t=__shfl_down_sync(sync, x[0], 1, TPI);
     t=(group_thread==TPI-1) ? top : t;
     low=uright_wrap(x[0], t, 1);
-          
+
     // estimate is in low
     w=0;
     #pragma unroll
@@ -456,7 +455,7 @@ class dispatch_dlimbs_t<core, dlimbs_algs_full> {
       t=(group_thread==TPI-1) ? 0 : t;
       w=(w>>32)+t;
     }
-    
+
     // increase the estimate by 4 -- because we might have cleared low bit, estimate can be off by 4
     t=(group_thread==TPI-LIMBS) ? 4 : 0;
     w=w + t + low;
