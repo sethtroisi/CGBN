@@ -26,6 +26,7 @@ namespace cgbn {
 
 template<class env>
 __device__ __forceinline__ void core_t<env>::mont_sqr(uint32_t &r, const uint32_t a, const uint32_t n, const uint32_t np0) {
+  printf("inner sqr\n");
   return mont_mul(r, a, a, n, np0);
 }
 
@@ -44,6 +45,11 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t &r, const uint32_
   // Seth: Throughput numbers in
   // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#maximize-instruction-throughput
   // MY 1080ti is probably __CUDA_ARCH__ 610 => XMAD
+
+  // Seth: This method is CIOS (Coarsely Integrated Operand Scanning)
+  // See http://koclab.cs.ucsb.edu/teaching/cren/project/2017/asplin.pdf
+
+  printf("inner mul\n");
 
   #pragma unroll
   for(int32_t thread=0;thread<TPI;thread++) {

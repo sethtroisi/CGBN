@@ -35,16 +35,32 @@ struct implementation<test_mont_sqr_1, params> {
   __device__ __host__ static void run(typename types<params>::input_t *inputs, typename types<params>::output_t *outputs, int32_t instance) {
     context_t context(cgbn_print_monitor);
     env_t     env(context);
-    bn_t      h1, h2, r1;
+    bn_t      h1, h2, r1, q1;
     uint32_t  np0;
 
+    // x1 is unused
+    cgbn_set_ui32(env, h1, 0);
+    //cgbn_store(env, &(inputs[instance].x1), h1);
+
+    // Change h1 to be 0x123456
+    for (int i = 1; i < 4; i++) {
+        cgbn_shift_left(env, h1, h1, 32);
+        cgbn_add_ui32(env, h1, h1, i);
+    }
+
+    cgbn_store(env, &(inputs[instance].h1), h1);
     cgbn_load(env, h1, &(inputs[instance].h1));
     cgbn_load(env, h2, &(inputs[instance].h2));
-
     cgbn_bitwise_mask_ior(env, h2, h2, 1);
-    np0=-cgbn_binary_inverse_ui32(env, cgbn_get_ui32(env, h2));
+    //np0=-cgbn_binary_inverse_ui32(env, cgbn_get_ui32(env, h2));
 
-    cgbn_mont_sqr(env, r1, h1, h2, np0);
+    if (cgbn_compare(env, h1, h2) >= 0) {
+        cgbn_sub(env, h1, h1, h2);
+    }
+    cgbn_bn2mont(env, q1, h1, h2);
+
+    // convert h1 to mont form
+    //cgbn_mont_sqr(env, r1, h1, h2, np0);
 
     cgbn_store(env, &(outputs[instance].r1), r1);
   }

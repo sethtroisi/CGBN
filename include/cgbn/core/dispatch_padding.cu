@@ -30,23 +30,23 @@ struct dispatch_padding_t {
   static const uint32_t TPI=core::TPI;
   static const uint32_t LIMBS=core::LIMBS;
   static const uint32_t BITS=core::BITS;
-  
+
   static const uint32_t PAD_THREAD=core::PAD_THREAD;
   static const uint32_t PAD_LIMB=core::PAD_LIMB;
 
   __device__ __forceinline__ static uint32_t clear_carry(uint32_t &x) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t result;
-    
+
     result=__shfl_sync(sync, x, PAD_THREAD, TPI);
     x=(group_thread<PAD_THREAD) ? x : 0;
     return result;
   }
-  
+
   __device__ __forceinline__ static uint32_t clear_carry(uint32_t x[LIMBS]) {
     uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & TPI-1;
     uint32_t result;
-    
+
     result=__shfl_sync(sync, x[PAD_LIMB], PAD_THREAD, TPI);
     x[PAD_LIMB]=(group_thread!=PAD_THREAD) ? x[PAD_LIMB] : 0;
     return result;
@@ -61,7 +61,8 @@ struct dispatch_padding_t {
   __device__ __forceinline__ static void clear_padding(uint32_t x[LIMBS]) {
     uint32_t group_thread=threadIdx.x & TPI-1;
     int32_t  group_base=group_thread*LIMBS;
-    
+
+    /* index = BITS/32+1; index < LIMPS; index++) x[index] = 0; */
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++)
       x[index]=(group_base<BITS/32-index) ? x[index] : 0;
