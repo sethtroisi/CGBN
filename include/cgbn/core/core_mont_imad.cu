@@ -61,9 +61,8 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
       x1=chain3.add(x1, 0);
 
       chain_t<LIMBS+1> chain4;
-      for(int32_t index=0;index<LIMBS-1;index++)
+      for(int32_t index=0;index<LIMBS;index++)
         x[index]=chain4.madhi(n[index], q, x[index+1]);
-      x[LIMBS-1]=chain4.madhi(n[LIMBS-1], q, x[LIMBS]);
       x[LIMBS]=chain4.add(x1, 0);
     }
   }
