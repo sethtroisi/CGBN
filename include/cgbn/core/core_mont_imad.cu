@@ -61,40 +61,62 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
       x1=chain3.add(x1, 0);
 
       chain_t<LIMBS+1> chain4;
+      #pragma unroll
       for(int32_t index=0;index<LIMBS;index++)
         x[index]=chain4.madhi(n[index], q, x[index+1]);
       x[LIMBS]=chain4.add(x1, 0);
     }
   }
 
-  // r1:r0 <= 0x00000002 0xFFFFFFFD
-  t=__shfl_up_sync(sync, x[LIMBS], 1, TPI);
+  { // Resolve lazy carry
 
-  // all but most significant thread clears r1
-  if(group_thread!=TPI-1)
-    x[LIMBS]=0;
-  if(group_thread==0)
-    t=0;
+    // spill carry of thread below.
+    t=__shfl_up_sync(sync, x[LIMBS], 1, TPI);
 
-  chain_t<LIMBS+1> chain5;
-  r[0]=chain5.add(x[0], t);
-  #pragma unroll
-  for(int32_t index=1;index<LIMBS;index++)
-    r[index]=chain5.add(x[index], 0);
-  c=chain5.add(x[LIMBS], 0);
+    // all but most significant thread clears spill carry
+    x[LIMBS]=x[LIMBS]*(group_thread==TPI-1);
+    // bottom thread doesn't copy from anyone
+    t=t*(group_thread>0);
 
-  c=-fast_propagate_add(c, r);
+    // Add the spilled carry to your limbs and possible ripple carry out.
 
-  // compute -n
-  t=n[0]-(group_thread==0);   // n must be odd, so there is no chance for a carry ripple
+    chain_t<LIMBS+1> chain5;
+    r[0]=chain5.add(x[0], t);
+    #pragma unroll
+    for(int32_t index=1;index<LIMBS;index++)
+      r[index]=chain5.add(x[index], 0);
+    c=chain5.add(x[LIMBS], 0);
 
-  chain_t<LIMBS+1> chain6;
-  r[0]=chain6.add(r[0], ~t & c);
-  #pragma unroll
-  for(int32_t index=1;index<LIMBS;index++)
-    r[index]=chain6.add(r[index], ~n[index] & c);
-  c=chain6.add(0, 0);
-  fast_propagate_add(c, r);
+    // Handle carrying the last bit?
+    c=-fast_propagate_add(c, r);
+
+    // compute and add -n if carry out from resolving lazy carry.
+    {
+      t=n[0]-(group_thread==0);   // n must be odd, so there is no chance for a carry ripple
+
+      // Subtract -n from r if needed from (c)arry
+      chain_t<LIMBS+1> chain6;
+      r[0]=chain6.add(r[0], ~t & c);
+      #pragma unroll
+      for(int32_t index=1;index<LIMBS;index++)
+        r[index]=chain6.add(r[index], ~n[index] & c);
+      c=chain6.add(0, 0);
+      fast_propagate_add(c, r);
+    }
+  }
+
+  t = dcompare<TPI, LIMBS>(sync, r, n);
+  if (t <= 1) {
+    // add -n
+    chain_t<LIMBS+1> chain6;
+    r[0]=chain6.add(r[0], ~(n[0] - (group_thread==0))); // n is odd so no chance of carry ripple
+    #pragma unroll
+    for(int32_t index=1;index<LIMBS;index++)
+      r[index]=chain6.add(r[index], ~n[index]);
+    c=chain6.add(0, 0);
+    fast_propagate_add(c, r);
+  }
+
   clear_padding(r);
 }
 
