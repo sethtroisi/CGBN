@@ -317,8 +317,8 @@ class core_t {
 
 //#if defined(XMP_IMAD)
   #include "core_mul_imad.cu"
-  #include "core_mont_imad.cu"
   #include "core_mont_diag_imad.cu"
+  #include "core_mont_imad.cu"
 /*
 #if defined(XMP_XMAD)
   #include "core_mul_xmad.cu"
