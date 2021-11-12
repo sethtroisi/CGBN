@@ -86,13 +86,17 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
     for(int32_t index=1;index<LIMBS;index++)
       r[index]=chain5.add(x[index], 0);
     c=chain5.add(x[LIMBS], 0);
+    // Handled by [c]arry from here on.
+    x[LIMBS] = 0;
 
     // Handle carrying the last bit?
     c=-fast_propagate_add(c, r);
 
     // compute and add -n if carry out from resolving lazy carry.
     {
-      t=n[0]-(group_thread==0);   // n must be odd, so there is no chance for a carry ripple
+      // Negative = two's compliment = invert bits and add one = subtract one and invert bits
+      // Subtract one is safer because n is odd (and hence >= 1)
+      t=n[0]-(group_thread==0);
 
       // Subtract -n from r if needed from (c)arry
       chain_t<LIMBS+1> chain6;
@@ -101,22 +105,11 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
       for(int32_t index=1;index<LIMBS;index++)
         r[index]=chain6.add(r[index], ~n[index] & c);
       c=chain6.add(0, 0);
-      fast_propagate_add(c, r);
+      c=-fast_propagate_add(c, r);
+      // Shouldn't have x - n >= R
+      assert(c==0);
     }
   }
-
-  t = dcompare<TPI, LIMBS>(sync, r, n);
-  if (t <= 1) {
-    // add -n
-    chain_t<LIMBS+1> chain6;
-    r[0]=chain6.add(r[0], ~(n[0] - (group_thread==0))); // n is odd so no chance of carry ripple
-    #pragma unroll
-    for(int32_t index=1;index<LIMBS;index++)
-      r[index]=chain6.add(r[index], ~n[index]);
-    c=chain6.add(0, 0);
-    fast_propagate_add(c, r);
-  }
-
   clear_padding(r);
 }
 

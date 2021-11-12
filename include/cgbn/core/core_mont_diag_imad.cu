@@ -62,6 +62,7 @@ __device__ __forceinline__ void core_t<env>::mont_sqr(uint32_t r[LIMBS], const u
       x[index] = chain1.add(n[index] >> 1, n[index+1] << 31);
     }
     if (LIMBS >= 2) {
+      // TODO ACCOUNT FOR PAD LIMB ???
       x[LIMBS-1] = chain1.add(n[LIMBS-1] >> 1, q << 31);
     }
     x[LIMBS] = chain1.add(x[LIMBS], 0);
@@ -140,12 +141,10 @@ __device__ __forceinline__ void core_t<env>::mont_sqr(uint32_t r[LIMBS], const u
       // in fast_squaring.py I do summation = (summation + q * n) >> 32
 
       q=__shfl_sync(sync, x[0], 0, TPI)*np0;
-      //printf("\t%x\n", q);
+      //if (group_thread==0) printf("%u,%u | %#x\n", thread, word, q);
 
       // If inv_two is moved to "+ r_inv" at the end, then this can be
       // skipped when thread < group_thread (as x will be 0)
-      //if (thread >= group_thread) {
-      //}
       chain_t<LIMBS+2> chain3;
       #pragma unroll
       for(int32_t index=0;index<LIMBS;index++) {
@@ -174,82 +173,78 @@ __device__ __forceinline__ void core_t<env>::mont_sqr(uint32_t r[LIMBS], const u
   { // Resolve lazy carry limb
     // x[LIMB]...x[0] <= 0x00000002 0xFFFFFFFD
     t=__shfl_up_sync(sync, x[LIMBS], 1, TPI);
+    assert(t <= 2);
 
     // all but most significant thread clears x[LIMB]
     x[LIMBS]=x[LIMBS]*(group_thread==TPI-1);
+    // least significant limb doesn't have carry in.
     t=t*(group_thread>0);
 
     chain_t<LIMBS+1> chain1;
-    r[0]=chain1.add(x[0], t);
+    x[0]=chain1.add(x[0], t);
     #pragma unroll
     for(int32_t index=1;index<LIMBS;index++)
-      r[index]=chain1.add(x[index], 0);
+      x[index]=chain1.add(x[index], 0);
     c=chain1.add(x[LIMBS], 0);
+    // Handled by [c]arry from here on.
+    x[LIMBS] = 0;
+
+    /*
+    if (group_thread==0) printf("FIRST\n");
+    for (int32_t s=TPI-1; s>=0; s--)
+        if (group_thread == s) {
+            printf("%d,%d | c: %u \n", group_thread, LIMBS, c);
+            for(int32_t index=LIMBS-1;index>=0;index--)
+              printf("%d,%d | %#x\n", group_thread, index, x[index]);
+        }
+    // */
 
     // compute and add -n if carry out from resolve lazy carry
-    c=-fast_propagate_add(c, r);
-    //if (group_thread==0) printf("n[0]: %#8x | c: %u\n", n[0], c);
-    //for(int32_t index=0;index<LIMBS;index++)
-    //  printf("%d,%d | %#x\n", group_thread, index, r[index]);
+    c=-fast_propagate_add(c, x);
+
+    //if (group_thread==0) printf("c: %u\n", c);
     {
       t=n[0]-(group_thread==0);   // n must be odd, so there is no chance for a carry ripple
 
       chain_t<LIMBS+1> chain2;
-      r[0]=chain2.add(r[0], ~t & c);
+      x[0]=chain2.add(x[0], ~t & c);
       #pragma unroll
       for(int32_t index=1;index<LIMBS;index++)
-        r[index]=chain2.add(r[index], ~n[index] & c);
+        x[index]=chain2.add(x[index], ~n[index] & c);
       c=chain2.add(0, 0);
-      fast_propagate_add(c, r);
-      clear_padding(r);
+      c=-fast_propagate_add(c, x);
+      // Shouldn't have x - n >= R
+      assert(c == 0);
     }
   }
-
-  // Reduce if r >= n
-  t = dcompare<TPI, LIMBS>(sync, r, n);
-  if (t <= 1) {
-    // add -n
-    chain_t<LIMBS+1> chain6;
-    r[0]=chain6.add(r[0], ~(n[0] - (group_thread==0))); // n is odd so no chance of carry ripple
-    #pragma unroll
-    for(int32_t index=1;index<LIMBS;index++)
-      r[index]=chain6.add(r[index], ~n[index]);
-    c=chain6.add(0, 0);
-    fast_propagate_add(c, r);
-  }
-
-  /*
-  // On rare occasion (why?) r starts >= 2*n
-  t = dcompare<TPI, LIMBS>(sync, r, n);
-  if (t <= 1) {
-    // add -n
-    chain_t<LIMBS+1> chain6;
-    r[0]=chain6.add(r[0], ~(n[0] - (group_thread==0))); // n is odd so no chance of carry ripple
-    #pragma unroll
-    for(int32_t index=1;index<LIMBS;index++)
-      r[index]=chain6.add(r[index], ~n[index]);
-    c=chain6.add(0, 0);
-    fast_propagate_add(c, r);
-  }
-
-  // r should be strictly less than n
-  t = dcompare<TPI, LIMBS>(sync, r, n);
-  //assert(t == 1);
-  */
 
   // x = 2*x
   {
     chain_t<LIMBS+2> chain1;
     #pragma unroll
     for(int32_t index=0;index<LIMBS;index++) {
-      r[index]=chain1.add(r[index], r[index]);
+      r[index]=chain1.add(x[index], x[index]);
     }
     c=chain1.add(0, 0);
 
-    // compute and add -n if carry out from resolving 2nd lazy carry
+    // compute and add -n if carry out from doubling
+    /*
+    if (group_thread==0) printf("DOUBLED\n");
+    for (int32_t s=TPI-1; s>=0; s--)
+        if (group_thread == s) {
+            printf("%d,%d | c: %u \n", group_thread, LIMBS, c);
+            for(int32_t index=LIMBS-1;index>=0;index--)
+              printf("%d,%d | %#x\n", group_thread, index, r[index]);
+        }
+    */
+
+    // Propogate carry up, and determine if carry out
     c=-fast_propagate_add(c, r);
-    //if (group_thread==0) printf("n[0]: %#8x | c: %u\n", n[0], c);
-    {
+    //if (group_thread==0) printf("c: %u\n\n", c);
+
+    q=0;  // count of reducotions
+    while (c) {
+      q++;
       t=n[0]-(group_thread==0);   // n must be odd, so there is no chance for a carry ripple
       chain_t<LIMBS+1> chain2;
       r[0]=chain2.add(r[0], ~t & c);
@@ -257,41 +252,16 @@ __device__ __forceinline__ void core_t<env>::mont_sqr(uint32_t r[LIMBS], const u
       for(int32_t index=1;index<LIMBS;index++)
         r[index]=chain2.add(r[index], ~n[index] & c);
       c=chain2.add(0, 0);
-      fast_propagate_add(c, r);
-      clear_padding(r);
+      c=-fast_propagate_add(c, r);
     }
+    // Sometimes 2!
+    if (group_thread==0 && q>2) printf("reduces: %u\n", q);
+
+    // In the case that R > x > n, then 2*x - n can STILL be greater than R
+    // Need either R > n > x, then n > 2*x - n
+
   }
-
-  // Reduce if r >= n
-  t = dcompare<TPI, LIMBS>(sync, r, n);
-  if (t <= 1) {
-    // add -n
-    chain_t<LIMBS+1> chain6;
-    r[0]=chain6.add(r[0], ~(n[0] - (group_thread==0))); // n is odd so no chance of carry ripple
-    #pragma unroll
-    for(int32_t index=1;index<LIMBS;index++)
-      r[index]=chain6.add(r[index], ~n[index]);
-    c=chain6.add(0, 0);
-    fast_propagate_add(c, r);
-  }
-
-  // r should be strictly less than n
-  t = dcompare<TPI, LIMBS>(sync, r, n);
-  assert(t == 1);
-
-  //if (group_thread == 0) printf("mul n[0]: %08x\n", n[0]);
-  /*
-  uint32_t z[LIMBS];
-  mont_mul(z, a, a, n, np0);
-
-  if (1 && group_thread == 0) {
-    #pragma unroll
-    for(int32_t index=0;index<LIMBS;index++)
-      if (r[index] != z[index]) {
-        printf("Error %d,%d | %x %x\n", group_thread, index, r[0], z[0]);
-      }
-  }
-  // */
+  clear_padding(r);
 }
 
 } /* namespace cgbn */
