@@ -10,7 +10,6 @@ pick:
 	@echo "   make turing"
 	@echo "   make ampere"
 	@echo "   make blackwell"
-	@echo "   make blackwell"
 	@echo
 
 clean:
