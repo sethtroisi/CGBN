@@ -22,6 +22,7 @@ pick:
 	@echo "   make volta"
 	@echo "   make turing"
 	@echo "   make ampere"
+	@echo "   make blackwell"
 	@echo
 
 clean:
@@ -49,6 +50,9 @@ turing: libgtest.a
 
 ampere: libgtest.a
 	nvcc $(INC) $(LIB) -I$(GTEST_DIR)/include -I../include -std=c++17 -arch=sm_80 tester.cu libgtest.a -lgmp -Xcompiler -fopenmp -o tester
+
+blackwell: libgtest.a
+	nvcc $(INC) $(LIB) -I$(GTEST_DIR)/include -I../include -std=c++17 -arch=sm_120 tester.cu libgtest.a -lgmp -Xcompiler -fopenmp -o tester
 
 check:
 	@if [ -z "$(GTEST_HOME)" -a ! -d "../gtest" ]; then echo "Google Test framework required, see XMP documentation"; exit 1; fi
