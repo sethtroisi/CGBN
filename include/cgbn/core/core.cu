@@ -49,10 +49,16 @@ typedef struct {
 template<class env>
 class core_t {
   public:
+  // Relates to thread layout?
+  // Threads per block (zero means to use the blockDim.x)
   static const uint32_t        TPB=env::TPB;
+  // Threads per instance | number of gpu threads that work on an instance (AKA number) at a time
   static const uint32_t        TPI=env::TPI;
+  // Overall number of bits (multiple of 32, cgbn_cuda.h:98)
   static const uint32_t        BITS=env::BITS;
+  // Limbs per thread
   static const uint32_t        LIMBS=env::LIMBS;
+  // Needed to where to find carry out bits
   static const uint32_t        PADDING=env::PADDING;
   static const uint32_t        MAX_ROTATION=env::MAX_ROTATION;
   static const uint32_t        SHM_LIMIT=env::SHM_LIMIT;
@@ -63,6 +69,7 @@ class core_t {
   static const uint32_t        PAD_THREAD=(BITS/32)/LIMBS;
   static const uint32_t        PAD_LIMB=(BITS/32)%LIMBS;
 
+  // "Distributed" limbs, for division and sqrt.
   static const uint32_t        DLIMBS=(LIMBS+TPI-1)/TPI;
   static const dlimbs_algs_t   DLIMBS_ALG=(LIMBS<=TPI/2) ? dlimbs_algs_half : (LIMBS<=TPI) ? dlimbs_algs_full : dlimbs_algs_multi;
 

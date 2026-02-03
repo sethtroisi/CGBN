@@ -34,19 +34,20 @@ __device__ __forceinline__ void core_t<env>::mul(uint32_t r[LIMBS], const uint32
     mpzero<LIMBS>(rl);
   mpset<LIMBS>(rh, add);
   rh[LIMBS]=0;
-    
+
   #pragma nounroll
   for(int32_t row=0;row<threads;row++) {
     #pragma unroll
-    for(int32_t l=0;l<LIMBS;l++) {      
+    for(int32_t l=0;l<LIMBS;l++) {
       t=__shfl_sync(sync, b[l], row, TPI);
-      
+
+      // With no args seems to be an infinite length change with no carry in our out (arith.h:84)
       chain_t<> chain1;
       #pragma unroll
-      for(int index=0;index<LIMBS;index++) 
+      for(int index=0;index<LIMBS;index++)
         rh[index]=chain1.madlo(a[index], t, rh[index]);
       rh[LIMBS]=chain1.add(rh[LIMBS], 0);
-      
+
       if(group_thread<threads-row)
         rl[l]=rh[0];
       rl[l]=__shfl_sync(sync, rl[l], threadIdx.x+1, TPI);
@@ -57,13 +58,13 @@ __device__ __forceinline__ void core_t<env>::mul(uint32_t r[LIMBS], const uint32
         rh[index]=chain2.madhi(a[index], t, rh[index+1]);
       rh[LIMBS-1]=chain2.madhi(a[LIMBS-1], t, rh[LIMBS]);
       rh[LIMBS]=chain2.add(0, 0);
-      
+
       rh[LIMBS-1]=add_cc(rh[LIMBS-1], rl[l]);
-      rh[LIMBS]=addc(rh[LIMBS], 0);      
+      rh[LIMBS]=addc(rh[LIMBS], 0);
     }
   }
-  
-  if(PADDING==0) 
+
+  if(PADDING==0)
     mpset<LIMBS>(r, rl);
   else {
     #pragma unroll
@@ -87,7 +88,7 @@ __device__ __forceinline__ void core_t<env>::mul_wide(uint32_t lo[LIMBS], uint32
     mpzero<LIMBS>(rl);
 
   mpset<LIMBS>(rh, add);
-  
+
   #pragma nounroll
   for(int32_t r=0;r<threads;r++) {
     #pragma unroll
@@ -101,22 +102,22 @@ __device__ __forceinline__ void core_t<env>::mul_wide(uint32_t lo[LIMBS], uint32
       carry=chain1.add(carry, 0);
 
       low=__shfl_sync(sync, rh[0], 0, TPI);
-      if(group_thread==r) 
+      if(group_thread==r)
         rl[l]=low;
-        
+
       low=__shfl_down_sync(sync, rh[0], 1, TPI);
       low=(group_thread==TPI-1) ? 0 : low;
-      
+
       chain_t<> chain2;
       #pragma unroll
       for(int32_t index=0;index<LIMBS-1;index++)
         rh[index]=chain2.madhi(a[index], t, rh[index+1]);
       rh[LIMBS-1]=chain2.madhi(a[LIMBS-1], t, carry);
       carry=chain2.add(0, 0);
-     
+
       rh[LIMBS-1]=add_cc(rh[LIMBS-1], low);
       carry=addc(carry, 0);
-    } 
+    }
   }
 
   if(BITS/32!=threads*LIMBS) {
@@ -131,9 +132,9 @@ __device__ __forceinline__ void core_t<env>::mul_wide(uint32_t lo[LIMBS], uint32
       carry=chain3.add(carry, 0);
 
       low=__shfl_sync(sync, rh[0], 0, TPI);
-      if(group_thread==threads) 
+      if(group_thread==threads)
         rl[l]=low;
-        
+
       low=__shfl_down_sync(sync, rh[0], 1, TPI);
       low=(group_thread==TPI-1) ? 0 : low;
 
@@ -143,14 +144,14 @@ __device__ __forceinline__ void core_t<env>::mul_wide(uint32_t lo[LIMBS], uint32
         rh[index]=chain4.madhi(a[index], t, rh[index+1]);
       rh[LIMBS-1]=chain4.madhi(a[LIMBS-1], t, carry);
       carry=chain4.add(0, 0);
-     
+
       rh[LIMBS-1]=add_cc(rh[LIMBS-1], low);
       carry=addc(carry, 0);
-    } 
+    }
   }
-  
+
   fast_propagate_add(carry, rh);
-  
+
   mpset<LIMBS>(lo, rl);
   mpset<LIMBS>(hi, rh);
 }

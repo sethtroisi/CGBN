@@ -66,21 +66,32 @@ class dispatch_resolver_t<core, 32, 0> {
    * returns 0 otherwise
    ****************************************************************/
   __device__ __forceinline__ static int32_t fast_propagate_add(const uint32_t carry, uint32_t &x) {
+    // TODO Can these become constexpr?
     uint32_t sync=0xFFFFFFFF, warp_thread=threadIdx.x & warpSize-1, lane=1<<warp_thread;
     uint32_t g, p, c;
     uint64_t sum;
   
+    // My understanding is we want to know if carry_in will it carry_out
+    //  this is equivilant to knowing if x = 2^n-1
+    // Then the problem can be reduced to the number of limbs
+
     g=__ballot_sync(sync, carry==1);
+    // Which threads have a carry (out)
     p=__ballot_sync(sync, x==0xFFFFFFFF);
+    // Which threads will carry with carry in
  
+    // c only uses uint32 part of this.
+    // can I record carry out and return that instead of (sum>>32)?
     sum=(uint64_t)g+(uint64_t)g+(uint64_t)p;
     c=lane&(p^sum);
     
     x=x+(c!=0);
      
+    // This output is for the overall result. e.g. returns 1 [on all threads ] if result carries out
     return sum>>32;   // -(p==0xFFFFFFFF);
   }
   
+  // TODO: 2026 is LIMBS the number per thread or total?
   __device__ __forceinline__ static int32_t fast_propagate_add(const uint32_t carry, uint32_t x[LIMBS]) {
     uint32_t sync=0xFFFFFFFF, warp_thread=threadIdx.x & warpSize-1, lane=1<<warp_thread;
     uint32_t land, g, p, c;
@@ -94,6 +105,7 @@ class dispatch_resolver_t<core, 32, 0> {
     c=lane & (p ^ sum);
     
     x[0]=add_cc(x[0], c!=0);
+    // Seems ugly to have to do this
     #pragma unroll
     for(int32_t index=1;index<LIMBS;index++)
       x[index]=addc_cc(x[index], 0);

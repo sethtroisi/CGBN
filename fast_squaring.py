@@ -109,6 +109,9 @@ def mont_sqr_block_cios_fast_inplace(a, n, r, block_inv):
         square_term = Ai[i] * Ai[i] << (32 * i)
         # This could ripple carry the whole length of summation
         summation += (square_term >> 1)
+        # Can maybe handle that by also passing array of (limb = 0xFFFF)
+        #   Carry is only now reduced to computing a 1032/32bit carry = 32bit carry maybe
+        #
 
         #print(i, "\t", hex(Ai[i]), "\tsquare", hex((Ai[i] * Ai[i] >> 33)), hex((Ai[i] * Ai[i] >> 1) & BLOCK))
 
@@ -179,24 +182,39 @@ def mont_sqr_block_cios_fast_two_stage(a, n, r, block_inv, n_inv):
         # one round of reduce
         #   m = summation[0] * n'[0] mod 2^32
         #   summation[j-1] = summation[j] + m * n[j]
-        m = -(summation * block_inv) % (2 ** 32)
+        #m = -(summation * block_inv) % (2 ** 32)
+        summation_low = summation & 0xFFFFFFFF
+        assert block_inv <= 0xFFFFFFFF
+        m = -((summation_low * block_inv) & 0xFFFFFFFF)
+
         summation = (summation + m * n) >> 32
 
-    if summation > n:
+    if summation < 0:
+        summation += n
+    if summation >= n:
         summation -= n
-    summation *= 2
+
+    # Double non-diagonal part of summary
+    summation <<= 1  # summation *= 2
+
     if summation >= n:
         summation -= n
     assert 0 <= summation < n
 
+    # Trace of limbs
     square_sum = 0
     for i in range(0, blocks):
         square_sum += Ai[i] * Ai[i] << (32 * (i + i))
 
     t = square_sum
-    u = (t + ((t * n_inv) % r) * n ) // r
-    if u >= n:
-        u -= n
+    # TODO(2025): This feels like one round of REDC reduce?
+    u1 = (t + ((t * n_inv) % r) * n ) // r
+    if u1 >= n:
+        u1 -= n
+    assert 0 <= u1 < n
+
+    m = (u1 & 0xFFFFFFFF) * block_inv
+
 
     summation += u
     if summation >= n:
@@ -213,6 +231,7 @@ random.seed(1)
 N = 0xfffadcafd43b06fb42ec7cb0585c4e2ad78fa438d36b7796b9ea4adcc67e2a97823e5f01
 assert N % 2 == 1
 
+# TODO(2025) What is this?
 R = 2 ** (9*32)
 R_inv = pow(R, -1, N)
 #print ("R_inv: ", R_inv)
@@ -228,10 +247,12 @@ assert (N * N_block_inv) % (2 ** 32) == 1
 N_inv = pow(-N, -1, R)
 assert R_inv * R - N * N_inv == 1
 
-for _ in range(1):
-    A = random.randrange(0, N)
-    # TODO hardcoded for now
-    A = 0xedd01ca6843b0429deaac33a40fb26fa78febb43f902481a7fdba45c89ec1b188d3c8f54
+if True:
+    As = [0xedd01ca6843b0429deaac33a40fb26fa78febb43f902481a7fdba45c89ec1b188d3c8f54]
+else:
+    As = [random.randrange(0, N) for i in range(100)]
+
+for A in As:
     RESULT = A * A % N
 
     A_mont = to_mont(A, R, N)
@@ -245,7 +266,7 @@ for _ in range(1):
 #    T4 = mont_sqr_block_cios(A_mont, N, R, N_block_inv)
 #    T5 = mont_sqr_block_cios_fast(A_mont, N, R, N_block_inv)
     T6 = mont_sqr_block_cios_fast_inplace(A_mont, N, R, N_block_inv)
-#    T7 = mont_sqr_block_cios_fast_two_stage(A_mont, N, R, N_block_inv, N_inv)
+    T7 = mont_sqr_block_cios_fast_two_stage(A_mont, N, R, N_block_inv, N_inv)
 
     print()
     print(hex(RESULT_mont), "=")
@@ -257,10 +278,10 @@ for _ in range(1):
 #    print(hex(T4))
 #    print(hex(T5))
     print(hex(T6))
-#    print(hex(T7))
+    print(hex(T7))
     assert T1 == T2 and T1 == T3
 #    assert T1 == T4
 #    assert T1 == T5
 #    assert T1 == T6
-#    assert T1 == T7
+    assert T1 == T7
 
