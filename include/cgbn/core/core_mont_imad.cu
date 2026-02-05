@@ -35,13 +35,14 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
   for(int32_t thread=0;thread<TPI;thread++) {
     #pragma unroll
     for(int word=0;word<LIMBS;word++) {
+      // Not sure this sync is needed, could maybe read from b_global[thread*LIMBS+word]
       t=__shfl_sync(sync, b[word], thread, TPI);
 
       chain_t<LIMBS+1> chain1;
       #pragma unroll
       for(int32_t index=0;index<LIMBS;index++)
         x[index]=chain1.madlo(a[index], t, x[index]);
-      x[LIMBS]=chain1.add(x[limbs], 0);
+      x[LIMBS]=chain1.add(x[LIMBS], 0);
 
       chain_t<LIMBS+1> chain2;
       for(int32_t index=0;index<LIMBS;index++)
@@ -92,6 +93,7 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
     c=-fast_propagate_add(c, r);
 
     // compute and add -n if carry out from resolving lazy carry.
+    // SHOULD THIS BE CONDITIONAL?
     {
       // Negative = two's compliment = invert bits and add one = subtract one and invert bits
       // Subtract one is safer because n is odd (and hence >= 1)

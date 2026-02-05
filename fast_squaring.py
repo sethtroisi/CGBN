@@ -215,8 +215,7 @@ def mont_sqr_block_cios_fast_two_stage(a, n, r, block_inv, n_inv):
 
     m = (u1 & 0xFFFFFFFF) * block_inv
 
-
-    summation += u
+    summation += u1
     if summation >= n:
         summation -= n
 
@@ -224,6 +223,123 @@ def mont_sqr_block_cios_fast_two_stage(a, n, r, block_inv, n_inv):
     #print("       % n :", summation % n)
 
     return summation
+
+
+def mont_mul_2026_gpu_code(a, n, r, block_inv, n_inv):
+    """This is my attempt to model what the GPU code is doing in each step"""
+    blocks, Ai = chunk_a(a, r)
+    Bi = Ai
+
+    np0 = block_inv
+    assert 0 <= np0 < 0xFFFFFFFF
+    assert (np0 * n) & 0xFFFFFFFF == 1
+
+    TPI = 8
+    LIMBS = (blocks + TPI-1) / TPI
+    print(blocks, TPI, LIMBS)
+
+    for thread in range(TPI):
+        for word in range(LIMBS)
+            sync_state = []
+            # This loop is implicit in GPU code.
+            for GPU_THREAD in range(TPI):
+                t = Bi[thread*LIMBS + word]
+                x = [0 for i in range(LIMBS+1)]
+                x1 = 0 # x[LIMBS+1]
+                carry = 0
+                for index in range(LIMBS)
+                    multiply_lo = a[index] * t + x[index] + carry
+                    carry = multiply_lo >> 32
+                    assert 0 <= carry <= 1
+                    x[index] += (multiply_lo & 0xFFFFFFFF)
+
+                x[LIMBS] += carry
+
+                carry = 0
+                for index in range(LIMBS):
+                    multiply_hi = ((a[index] * t) >> 32) + x[index] + carry
+                    carry = multiply_hi >> 32
+                    assert 0 <= carry <= 1
+                    x[index+1] += (multiply_hi & 0xFFFFFFFF)
+                x1 = carry
+
+                # all syncronize on q = x[0]
+                sync_state.append((x, x1))
+
+            for GPU_THREAD in range(TPI)
+                q = sync_state[0][0] * np0
+                x, x1 = sync_state[GPU_THREAD]
+
+                carry = 0
+                for index in range(LIMBS):
+                    multiply_lo = n[index] * q + carry
+                    carry = multiply_lo > 0xFFFFFFFF
+                    x[index] += (multiply_lo & 0xFFFFFFFF)
+
+                # sync on t = x[0] a second time
+                sync_state[GPU_THREAD] = (x, x1, q, carry)
+
+            for GPU_THREAD in range(TPI)
+                t = sync_state[0][0] * np0
+                x, x1, q, carry = sync_state[GPU_THREAD]
+                partial = x[LIMBS] + t
+                carry = partial >> 32
+                assert 0 <= carry <= 1
+                x[LIMBS] = partial & 0xFFFFFFFF
+                x1 = x1 + carry
+
+                carry = 0
+                for index in range(LIMBS):
+                    multiply_hi = ((n[index] * q) >> 32) + x[index+1] + carry
+                    carry = multiply_hi >> 32
+                    assert 0 <= carry <= 1
+                    x[index] += (multiply_hi & 0xFFFFFFFF)
+                x[LIMBS] = x1 + carry
+
+    # Have to resolve lazy carry in two stages
+
+
+
+
+def  mont_sqr_block_cios_2026(a, n, r, block_inv, n_inv):
+    blocks, Ai = chunk_a(a, r)
+
+    # Ai shifted over 1, reduced mod n
+    t = (a << 1)
+    if t > r:
+        t -= n
+    blocks2, Ai_shifted = chunk_a(t, r)
+    if blocks2 < blocks:
+        Ai_shifted.extend([0] * (blocks2 - blocks))
+
+    summation = 0
+    for i in range(0, blocks):
+        for j in range(0, i):
+            summation += Ai[i] * Ai_shifted[j] << (32 * j)
+
+        summation += Ai[i] * Ai[i] << (32 * i)
+
+        # one round of reduce
+        #   m = summation[0] * n'[0] mod 2^32
+        #   summation[j-1] = summation[j] + m * n[j]
+        #m = -(summation * block_inv) % (2 ** 32)
+        summation_low = summation & 0xFFFFFFFF
+        assert block_inv <= 0xFFFFFFFF
+        m = -((summation_low * block_inv) & 0xFFFFFFFF)
+
+        summation = (summation + m * n) >> 32
+        print(i, summation.bit_length(), summation)
+
+    if summation < 0:
+        summation += n
+    if summation >= n:
+        summation -= n
+
+    assert 0 <= summation < n
+
+    return summation
+
+
 
 random.seed(1)
 
@@ -267,6 +383,7 @@ for A in As:
 #    T5 = mont_sqr_block_cios_fast(A_mont, N, R, N_block_inv)
     T6 = mont_sqr_block_cios_fast_inplace(A_mont, N, R, N_block_inv)
     T7 = mont_sqr_block_cios_fast_two_stage(A_mont, N, R, N_block_inv, N_inv)
+    T8 = mont_sqr_block_cios_2026(A_mont, N, R, N_block_inv, N_inv)
 
     print()
     print(hex(RESULT_mont), "=")
