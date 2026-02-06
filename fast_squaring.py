@@ -18,19 +18,17 @@ def mont_sqr_redc(a, r, n_inv, n):
         return u - n
     return u
 
-def chunk_a(a, r):
+def chunk(t, min_length=0):
     BLOCK = 2**32 - 1
     # How many 32 bit chunks in r
-    bits = len(bin(r)) - 3
-    blocks, test = divmod(bits, 32)
-    assert test == 0, bits
-
+    bits = n.bin_length()
+    blocks = (bits-1)/32 + 1
     # low 32, 33-64, 65-96, ...
-    A = [(a >> (32*i)) & BLOCK for i in range(blocks)]
+    A = [(a >> (32*i)) & BLOCK for i in range(min(blocks, min_length)]
     return blocks, A
 
 def mont_sqr_block1(a, r, r_inv, n):
-    blocks, Ai = chunk_a(a, r)
+    blocks, Ai = chunk(a)
 
     summation = 0
     for i in range(0, blocks):
@@ -40,7 +38,7 @@ def mont_sqr_block1(a, r, r_inv, n):
     return summation * r_inv % n
 
 def mont_sqr_block_cios(a, n, r, block_inv):
-    blocks, Ai = chunk_a(a, r)
+    blocks, Ai = chunk(a)
 
     summation = 0
     for i in range(0, blocks):
@@ -64,7 +62,7 @@ def mont_sqr_block_cios(a, n, r, block_inv):
     return summation
 
 def mont_sqr_block_cios_fast(a, n, r, block_inv):
-    blocks, Ai = chunk_a(a, r)
+    blocks, Ai = chunk(a)
 
     summation = 0
     for i in range(0, blocks):
@@ -94,7 +92,7 @@ def mont_sqr_block_cios_fast(a, n, r, block_inv):
     return summation
 
 def mont_sqr_block_cios_fast_inplace(a, n, r, block_inv):
-    blocks, Ai = chunk_a(a, r)
+    blocks, Ai = chunk(a)
 
     summation = 0
     if a & 1:
@@ -132,7 +130,7 @@ def mont_sqr_block_cios_fast_inplace(a, n, r, block_inv):
     print("---")
     print(summation)
     print(hex(summation))
-    for c in reversed(list(map(hex, chunk_a(summation, r)[1]))): print("\t", c)
+    for c in reversed(list(map(hex, chunk(summation)[1]))): print("\t", c)
 
     if summation >= R:
         summation -= n
@@ -158,7 +156,7 @@ def mont_sqr_block_cios_fast_inplace(a, n, r, block_inv):
     print("after 2nd sub")
     print(summation)
     print(hex(summation))
-    for c in reversed(list(map(hex, chunk_a(summation, r)[1]))): print("\t", c)
+    for c in reversed(list(map(hex, chunk(summation)[1]))): print("\t", c)
 
     #if summation > n:
     #    summation -= n
@@ -168,7 +166,7 @@ def mont_sqr_block_cios_fast_inplace(a, n, r, block_inv):
 
 
 def mont_sqr_block_cios_fast_two_stage(a, n, r, block_inv, n_inv):
-    blocks, Ai = chunk_a(a, r)
+    blocks, Ai = chunk(a)
 
     summation = 0
     for i in range(0, blocks):
@@ -227,7 +225,7 @@ def mont_sqr_block_cios_fast_two_stage(a, n, r, block_inv, n_inv):
 
 def mont_mul_2026_gpu_code(a, n, r, block_inv, n_inv):
     """This is my attempt to model what the GPU code is doing in each step"""
-    blocks, Ai = chunk_a(a, r)
+    blocks, Ai = chunk(a)
     Bi = Ai
 
     np0 = block_inv
@@ -238,11 +236,11 @@ def mont_mul_2026_gpu_code(a, n, r, block_inv, n_inv):
     LIMBS = (blocks + TPI-1) / TPI
     print(blocks, TPI, LIMBS)
 
+    sync_state = [None for i in range(TPI)
     for thread in range(TPI):
         for word in range(LIMBS)
-            sync_state = []
             # This loop is implicit in GPU code.
-            for GPU_THREAD in range(TPI):
+            for gpu_thread in range(TPI):
                 t = Bi[thread*LIMBS + word]
                 x = [0 for i in range(LIMBS+1)]
                 x1 = 0 # x[LIMBS+1]
@@ -264,11 +262,11 @@ def mont_mul_2026_gpu_code(a, n, r, block_inv, n_inv):
                 x1 = carry
 
                 # all syncronize on q = x[0]
-                sync_state.append((x, x1))
+                sync_state[gpu_thread] = (x, x1)
 
-            for GPU_THREAD in range(TPI)
+            for gpu_thread in range(TPI)
                 q = sync_state[0][0] * np0
-                x, x1 = sync_state[GPU_THREAD]
+                x, x1 = sync_state[gpu_thread]
 
                 carry = 0
                 for index in range(LIMBS):
@@ -277,11 +275,11 @@ def mont_mul_2026_gpu_code(a, n, r, block_inv, n_inv):
                     x[index] += (multiply_lo & 0xFFFFFFFF)
 
                 # sync on t = x[0] a second time
-                sync_state[GPU_THREAD] = (x, x1, q, carry)
+                sync_state[gpu_thread] = (x, x1, q, carry)
 
-            for GPU_THREAD in range(TPI)
+            for gpu_thread in range(TPI)
                 t = sync_state[0][0] * np0
-                x, x1, q, carry = sync_state[GPU_THREAD]
+                x, x1, q, carry = sync_state[gpu_thread]
                 partial = x[LIMBS] + t
                 carry = partial >> 32
                 assert 0 <= carry <= 1
@@ -296,19 +294,44 @@ def mont_mul_2026_gpu_code(a, n, r, block_inv, n_inv):
                     x[index] += (multiply_hi & 0xFFFFFFFF)
                 x[LIMBS] = x1 + carry
 
-    # Have to resolve lazy carry in two stages
+                sync_state[gpu_thread] = (x, x1)
 
+    # Have to resolve lazy carry in two stages
+    for gpu_thread in range(TPI)
+        # Get carry from lower thread
+        t = sync_state[max(gpu_thread-1, 0)][0][LIMBS]
+        x, x1 = sync_state[gpu_thread]
+
+        # Clear the spilled carry limb (except top thread)
+        x[LIMBS] *= (gpu_threada == TPI-1)
+
+        # Bottom threads doesn't need carry in
+        t = t * (group_thread > 0)
+
+        # Carry up our limbs
+        add = x[0] + t
+        carry = add > 0xFFFFFFFF
+        r[0] = add & 0xFFFFFFFF
+        for index in range(1, LIMBS):
+            add = x[index] + carry
+            carry = add > 0xFFFFFFFF
+            r[index] = add & 0xFFFFFFFF
+        c = x[LIMBS] + carry
+        x[LIMBS] = 0
+
+        # Fast propagate add is magic which sucks that I have to implement it here
+        sync_state[gpu_thread] = (x, r)
 
 
 
 def  mont_sqr_block_cios_2026(a, n, r, block_inv, n_inv):
-    blocks, Ai = chunk_a(a, r)
+    blocks, Ai = chunk(a)
 
     # Ai shifted over 1, reduced mod n
     t = (a << 1)
     if t > r:
         t -= n
-    blocks2, Ai_shifted = chunk_a(t, r)
+    blocks2, Ai_shifted = chunk(t)
     if blocks2 < blocks:
         Ai_shifted.extend([0] * (blocks2 - blocks))
 
