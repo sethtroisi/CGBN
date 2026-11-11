@@ -1,4 +1,4 @@
-SUBDIRS := sample_01_add sample_02_modinv sample_03_powm sample_04_miller_rabin
+SUBDIRS := sample_01_add sample_02_modinv sample_03_powm sample_04_miller_rabin sample_05_mont_sqr
 
 TARGETS := clean kepler maxwell pascal volta turing ampere
 
