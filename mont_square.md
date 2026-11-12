@@ -16,6 +16,9 @@ CGBN's stock `cgbn_env_t::mont_sqr(r, a, n, np0)` originally delegated directly 
 | `hensel64-lookahead-sqr` (`f789316`) | Half-Split CIOS + Radix-$2^{64}$ Hensel Parallel Quotients `(q0, q1)` | 45 (`83.3%`) | 217 | 661 | `26.052` (`1006.25`) | `22.182` (`1181.79`) | — |
 | `halfsplit-cios-iter11` (`2f1553a`) | Half-Split CIOS + `8x2` $a_{\text{hi}}^2$ + `activemask` Width-8 Shuffles | 47 (`83.3%`) | 209 | 651 | `25.000` (`1048.56`) | `21.520` (`1218.12`) | — |
 | **`lean-halfsplit-pred` (`ba9cdef`)** | **Unified `Even+Mid` + 2-Reg Packed LUTs + Hoisted Predicates** | **48 (`83.3%`)** | **209** | **632** | **`22.021–24.756` (`1058.9–1190.4`)** | **`19.634–20.180` (`1299.0–1335.1`)** | **`1.546 / 1.542 ms` (`1324.7 / 1328.0`)** |
+| **`fast-mont-sqr-v2` (`e524a1b`)** | **0-Shuffle `Even` + 2-Shuffle `Mid` Bijection + 1-Reg `lo` + Chained `2x2`** | **49 (`75.0%`)** | **209** | **611** | **`101.78–102.57 ms` (`1022.3–1030.2` @ `-i 1024`)** | **`99.74 ms` (`1051.3` @ `-i 1024`; `98.92 ms` = `1060.0` sweep)** | — |
+
+*(Note: After simplifying the benchmark harness at `00d9900` to `iterations = 1024, runs = 10` (`104.86M` squarings/launch), `mont_square_starting_point` (`00d9900`) runs in `123.20–125.14 ms` avg (`837.9–851.2 M sqr/s`), `lean-halfsplit-pred` (`ba9cdef`) runs in `104.553 ms` avg / `101.911 ms` best (`1,002.9 / 1,028.9 M sqr/s`), and **`fast-mont-sqr-v2` (`e524a1b`)** drops kernel time to **`101.783 ms` avg / `99.743 ms` best (`1,030.21 / 1,051.28 M sqr/s`, `0.971 ns/sqr`)** — see [Section 9](#9-branch-fast-mont-sqr-v2-e524a1b--0-shuffle-even--2-shuffle-mid-bijection--611-sass-instructions) for the full `1024`-iteration table.)*
 
 ### Four Decisive Architectural Findings on Ada (`sm_89`)
 1. **Hybrid Half-Split Integrated CIOS Beats Pure Separated SOS (`632` vs. `826` SASS Instructions)**:
@@ -598,3 +601,65 @@ To reduce hardware `IMAD.WIDE` multiplications strictly below the `194`-mul quad
    `toom3-quartersplit-sqr` (`188` `IMAD.WIDE`s) and `toom4-full-sqr` (`182` `IMAD.WIDE`s) genuinely save **`17` to `23` hardware `IMAD.WIDE` instructions per lane** below `205` (`-68` to `-74` below `mont_mul`'s `256`). However, on NVIDIA Ada (`sm_89`), `1` `IMAD.WIDE.U32` costs only `~2` integer pipe cycles (`~34–46` cycles saved per lane), whereas:
    - Evaluating `5` (Toom-3) or `7` (Toom-4) multi-word linear combinations across lanes + running `9` (Toom-3) or `20` (Toom-4) `530–534`-bit distributed additions/subtractions/shifts/exact-divisions adds **`+382` to `+757` `IADD3`s** and **`+163` to `+314` `SHFL`s** (`15–35x` more cycles than the `IMAD.WIDE`s saved at `256`-bit chunk size!), while live evaluation points push register pressure to `68–82` (`50–58%` occupancy).
    - Because evaluation/interpolation scales **linearly** $O(L)$ with chunk limbs $L$ while symmetric squaring savings scale **quadratically** $O(L^2)$, paired subwarp Toom-2 crosses over against symmetric schoolbook when each half exceeds `512–1024` bits (**`N >= 2048` bits**, `LIMBS >= 8`), and 100%-unsigned Toom-3 / Toom-4 cross over at **`N >= 4096` bits** (`LIMBS >= 16`), where our exact `wmad_sqr_4x2_cs`, 100%-unsigned Bodrato ladders, and parallel 2-adic `div_exact` primitives apply directly.
+
+
+---
+
+## 9. Branch `fast-mont-sqr-v2` (`e524a1b`) — 0-Shuffle `Even` + 2-Shuffle `Mid` Bijection & `611` SASS Instructions
+
+After rebasing onto the standardized `iterations = 1024, runs = 10` (`104.86M` squarings per launch) benchmark harness at `mont_square_starting_point` (`00d9900`), we performed a full SASS X-ray of `lean-halfsplit-pred` (`ba9cdef`, `632` dynamic hot-loop instructions) and discovered an exact combinatorial schedule bijection for the `8 x 2` symmetric squaring of $a_{\text{hi}}^2$ that eliminates **all 4 `Even` shuffles, 2 of the 4 `Mid` shuffles, the entire second LUT register `lut_e` (`le`), 7 funnel shifts, and 11 register-pair `MOV`s**, cutting the hot loop to **`611` dynamic SASS instructions** (`-17.0%` vs `mont_mul`'s `736` and `-21` insts below `ba9cdef`) and breaking the **`100 ms` barrier** on NVIDIA L4 (`99.743 ms` official best / `98.922 ms` sweep best = **`1,051.3–1,060.0 M mont_sqr/s`**).
+
+### 9.1 Standardized `iterations = 1024, runs = 10` Benchmark Summary (`results.csv`, NVIDIA L4)
+
+All rows below were measured via `./colab_benchmark.sh --gpu L4 --csv results.csv -t 8` (`102,400` instances, `1018`-bit inputs in `1024`-bit CGBN env, `1,024` chained squarings/instance = `104.86M` `mont_sqr` ops/launch, `10` timed runs + `1` warmup, `PASS` GMP verification):
+
+| Branch / Tag (`git_hash`) | Core Strategy | Fast SASS | `avg_ms` | `best_ms` | `avg_msqr/s` | `best_msqr/s` | `ns/sqr` | Speedup vs `00d9900` (`124.72 ms`) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `mont_square_starting_point` (`00d990082d`, 10-suite mean) | Stock CIOS `mont_mul(r, a, a, n, np0)` | `736` | `124.722` | `120.542` | `840.74` | `869.88` | `1.189` | `1.000x` |
+| `toom4-full-sqr` (`388ff43744`) | Unsigned Paired Toom-4 (`182` wide) + CS REDC | `2,274` | `284.267` | `276.347` | `368.87` | `379.44` | `2.711` | `0.439x` |
+| `toom3-quartersplit-sqr` (`3e6b54e753`) | Quarter-Split CIOS + Unsigned Paired Toom-3 | `1,505` | `191.419` | `188.397` | `547.79` | `556.58` | `1.826` | `0.652x` |
+| `master-iter2` (`2c4ba3fbf3`) | Early Flat Target-Sum SOS + REDC | — | `143.656` | `139.658` | `729.92` | `750.82` | `1.370` | `0.868x` |
+| `dual-8x2-sos-redc` (`3fe3a65595`) | `194`-Wide Dual-`8x2` SOS + CS REDC | `826` | `129.844` | `126.163` | `807.57` | `831.13` | `1.238` | `0.961x` |
+| **`toom2-halfsplit-sqr` (`b8db77581e`)** | **Half-Split CIOS + Carry-Save Paired Toom-2** | **`736`** | **`115.650`** | **`113.277`** | **`906.68`** | **`925.67`** | **`1.103`** | **`1.078x` (`+7.8%`)** |
+| `hensel64-lookahead-sqr` (`f789316d15`) | Half-Split CIOS + Radix-$2^{64}$ Hensel Quotients | `661` | `109.141` | `105.844` | `960.76` | `990.68` | `1.041` | `1.143x` (`+14.3%`) |
+| `halfsplit-cios-iter11` (`2f1553abfb`) | Half-Split CIOS + `8x2` $a_{\text{hi}}^2$ (`activemask`) | `651` | `106.779` | `104.428` | `982.01` | `1,004.12` | `1.018` | `1.168x` (`+16.8%`) |
+| `lean-halfsplit-pred` (`ba9cdef625`) | 2-Reg Packed LUTs (`lo, le`) + Unified `Even+Mid` | `632` | `104.553` | `101.911` | `1,002.92` | `1,028.92` | `0.997` | `1.193x` (`+19.3%`) |
+| **`fast-mont-sqr-v2` (`e524a1b497`, run 1)** | **0-Shfl `Even` + 2-Shfl `Mid` + 1-Reg `lo` + Chained `2x2`** | **`611`** | **`101.783`** | **`99.828`** | **`1,030.21`** | **`1,050.39`** | **`0.971`** | **`1.225x` (`+22.5%`)** |
+| **`fast-mont-sqr-v2` (`e524a1b497`, run 2)** | *(Back-to-back thermal validation run)* | **`611`** | **`102.566`** | **`99.743`** | **`1,022.34`** | **`1,051.28`** | **`0.978`** | **`1.216x` (`+21.6%`)** |
+
+### 9.2 Combinatorial Schedule Bijection: 0-Shuffle `Even` + 2-Shuffle `Mid` + Single-Register `lo`
+
+In `lean-halfsplit-pred` (`ba9cdef`), Step 3 (`8 x 2` symmetric squaring of $D_0, \dots, D_7$, where $D_k = (d_{0,k}, d_{1,k}) \in [0, 2^{64})$) executed **16 `SHFL.IDX` instructions** driven by **8 3-bit LUT nibbles** across two registers (`lo, le`): `4` shuffles for `Odd 0` ($D_{i_0} \cdot D_{j_0}$), `4` for `Odd 1` ($D_{i_1} \cdot D_{j_1}$), `4` for `Even` ($D_{e_i} \cdot D_{e_j}$), and `4` for `Mid` ($D_{m_y} \cdot x_m$).
+
+By jointly permuting the assignment of the `12` odd-sum block pairs ($i + j \text{ odd}$), `8` non-middle even-sum block pairs ($i + j \in \{2, 4, 6, 8, 10, 12\}$), and `4` middle sum-$7$ block pairs $\{(0, 7), (1, 6), (2, 5), (3, 4)\}$ across lanes $g \in \{0, \dots, 7\}$ with packed LUT constants
+$$\text{i0} = \text{0x25436107}, \quad \text{j0} = \text{0x50761432}, \quad \text{i1} = \text{0x36547210}, \quad \text{j1} = \text{0x47650321},$$
+every operand required by `Even` and `Mid` is **already resident in registers** from `Odd 0` and `Odd 1`:
+
+| Lane $g$ | `i0` | `j0` | `Odd 0`: $D_{i_0} D_{j_0}$ | `i1` | `j1` | `Odd 1`: $D_{i_1} D_{j_1}$ | **`Even` $= D_{i_0} D_{j_1}$ (`0` shfls)** | **`Mid` (`xor 4` on $D_{j_0}$, `2` shfls)** |
+|---:|---:|---:|---|---:|---:|---|---|---|
+| `0` | `7` | `2` | $D_7 D_2$ (`s=9`, $\to g=4$) | `0` | `1` | $D_0 D_1$ (`s=1`, keep) | $D_7 D_1$ (`s=8`, `!keep_e` $\to g=4$) | $j_0(0)=2, j_0(4)=6$: $D_6 \cdot d_{0,2}$ ($\to g=4$) |
+| `1` | `0` | `3` | $D_0 D_3$ (`s=3`, keep) | `1` | `2` | $D_1 D_2$ (`s=3`, keep) | $D_0 D_2$ (`s=2`, keep) | $j_0(1)=3, j_0(5)=7$: $D_7 \cdot d_{0,3}$ ($\to g=5$) |
+| `2` | `1` | `4` | $D_1 D_4$ (`s=5`, keep + `6`) | `2` | `3` | $D_2 D_3$ (`s=5`, keep) | $D_1 D_3$ (`s=4`, keep) | $j_0(2)=4, j_0(6)=0$: $D_4 \cdot d_{1,0}$ ($+ D_4 d_{0,0}$ from `6`) |
+| `3` | `6` | `1` | $D_6 D_1$ (`s=7`, keep + `7`) | `7` | `0` | $D_7 D_0$ (`s=7`, keep) | $D_6 D_0$ (`s=6`, keep + $D_2 D_4$ from `7`) | $j_0(3)=1, j_0(7)=5$: $D_1 \cdot d_{1,5}$ ($+ D_1 d_{0,5}$ from `7`) |
+| `4` | `3` | `6` | $D_3 D_6$ (`s=9`, keep + `0`) | `4` | `5` | $D_4 D_5$ (`s=9`, keep) | $D_3 D_5$ (`s=8`, keep + $D_7 D_1$ from `0`) | $j_0(4)=6, j_0(0)=2$: $D_6 \cdot d_{1,2}$ ($+ D_6 d_{0,2}$ from `0`) |
+| `5` | `4` | `7` | $D_4 D_7$ (`s=11`, keep) | `5` | `6` | $D_5 D_6$ (`s=11`, keep) | $D_4 D_6$ (`s=10`, keep) | $j_0(5)=7, j_0(1)=3$: $D_7 \cdot d_{1,3}$ ($+ D_7 d_{0,3}$ from `1`) |
+| `6` | `5` | `0` | $D_5 D_0$ (`s=5`, $\to g=2$) | `6` | `7` | $D_6 D_7$ (`s=13`, keep) | $D_5 D_7$ (`s=12`, keep) | $j_0(6)=0, j_0(2)=4$: $D_4 \cdot d_{0,0}$ ($\to g=2$) |
+| `7` | `2` | `5` | $D_2 D_5$ (`s=7`, sum $\to g=3$) | `3` | `4` | $D_3 D_4$ (`s=7`, sum $\to g=3$) | $D_2 D_4$ (`s=6`, `!keep_e` $\to g=3$) | $j_0(7)=5, j_0(3)=1$: $D_1 \cdot d_{0,5}$ ($\to g=3$) |
+
+- **Odd (`12` pairs)**: `accum_p = 0xBE` (`{1,2,3,4,5,7}`) sums `Odd 0 + Odd 1` locally (including `g = 7`'s $D_2 D_5 + D_3 D_4$, which is sent via `xor 4` to `g = 3`), while `!accum_p` (`{0, 6}`) keeps `Odd 1` ($D_0 D_1$ on `g = 0`, $D_6 D_7$ on `g = 6`) locally and sends `Odd 0` ($D_7 D_2 \to g = 4$, $D_5 D_0 \to g = 2$) via `xor 4` to `recv_o = 0x1C` (`{2, 3, 4}`). Notice `not_g7 = 0x7F` zeroes `g = 7`'s local `O0, O1` after `xor 4` so $D_2 D_5 + D_3 D_4$ is only accumulated on `g = 3`.
+- **Even (`8` pairs, `0` shuffles) + Mid (`4` pairs, `2` shuffles)**: `keep_e = 0x7E` (`{1..6}`) keeps $D_{i_0} D_{j_1}$ locally and sends `!keep_e` (`g = 0`: $D_7 D_1$, `g = 7`: $D_2 D_4$) via the shared `xor 4` butterfly to `g = 4` and `g = 3`, while two `shfl_xor(..., 4)` butterflies on `(xj0_0, xj1_0)` deliver the four remaining even-sum pairs $D_4 D_0, D_1 D_5, D_6 D_2, D_7 D_3$ onto `owns_mid = 0x3C` (`{2, 3, 4, 5}`). Every one of the $\binom{8}{2} = 28$ off-diagonal block products is covered once and only once.
+
+### 9.3 Microarchitectural & SASS Improvements (`ba9cdef` `632` $\to$ `e524a1b` `611`)
+
+1. **Single Hoisted LUT + Bitmask Register `lo`**:
+   Eliminating `Even` and `Mid` LUT nibbles shrinks all Step-3 source-lane tables to `16` bits (`bits [15:0]` of `lo`), leaving `bits [31:24]` free to hold `g_bit << 24` (`1u << (24 + group_thread)`). All Step-3 predicates (`odd_lane`, `accum_p`, `recv_o`, `not_g7`, `owns_mid`, `keep_e`) become single bitmask tests on `lo` (`LOP3.LUT P, RZ, lo, mask, RZ, 0xc0` hoisted or folded cleanly), completely eliminating `lut_e` (`le`).
+2. **Directly Chained `wmad_mul_2x2` & Accumulating `wmad_mul_2x2_acc`**:
+   Replacing the unchained 3-`mad_wide` `wmad_mul_2x2` with `2` `mad_wide`s (`w00, w11`) + two 3-word `madlo_cc / madhic_cc / addc` cross-product chains, and fusing `Odd 1` directly into `(O0..O3, c_O)` via `wmad_mul_2x2_acc`, eliminates intermediate carry-merge registers and cuts `ptxas`'s 64-bit register-pair alignment `MOV`s in half (**`MOV: 23 -> 12`**).
+3. **Why `REG = 49` (`36` Warps/SM = `75.0%` Occupancy, `611` Insts) Beats Forcing `REG <= 48` (`40` Warps/SM = `83.3%`, `623` Insts)**:
+   In Round 5 (`U0..U5`, 12-run `FWD + REV` sweeps at `-i 1024`), compressing `S2` by 1–2 registers into `REG = 47–48` (`U2_S2_pack_both`: `REG = 47`, `U5_S2_ultralean`: `REG = 48`) raised occupancy from `36` to `40` warps/SM (`83.3%`), **but** forced `ptxas`'s register allocator to reuse aligned `(R_{2k}, R_{2k+1})` pairs across `IMAD.WIDE.U32`, injecting **`+10` extra `MOV`s (`MOV: 12 -> 22`, `fast: 611 -> 623–624`)** and slowing execution by `+1.05–1.12 ms` (`104.37–104.43 ms` vs `103.32 ms`). Because `9` active warps per SM sub-partition (`36` warps/SM) already saturate the ~22-cycle `SHFL.IDX -> IMAD.WIDE` pipeline on Ada `sm_89`, saving `12` dynamic instructions per squaring strictly wins.
+
+| Kernel (`sm_89` SASS Hot Loop) | `REG` (Occ.) | Fast Insts | `IMAD.WIDE` + `HI` | `IMAD32` | `IMAD.X` | `IADD3` | `SHFL` | `SEL` | `MOV` | `SHF` | `LOP3` | `-i 1024` Official Avg / Best |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `lean-halfsplit-pred` (`ba9cdef`) | `48` (`83.3%`) | `632` | `205 + 4` | `37` | `16` | `108` | `115` | `89` | `23` | `18` | `0` | `104.553 / 101.911 ms` |
+| **`fast-mont-sqr-v2` (`e524a1b`)** | **`49` (`75.0%`)** | **`611`** | **`205 + 4`** | **`37`** | **`18`** | **`109`** | **`109`** | **`88`** | **`12`** | **`11`** | **`6`** | **`101.783 / 99.743 ms`** |
+| **Net Delta** | `+1` reg | **`-21` insts** | `0` | `0` | `+2` | `+1` | **`-6`** | **`-1`** | **`-11`** | **`-7`** | `+6` | **`-2.770 / -2.168 ms`** |
