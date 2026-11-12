@@ -51,22 +51,52 @@ __device__ __forceinline__ uint32_t wmad_shfl_xor8(const uint32_t mask, const ui
   return res;
 }
 
+__device__ __forceinline__ void wmad_mul_2x1(
+    uint32_t &h0, uint32_t &h1, uint32_t &h2,
+    const uint32_t x0, const uint32_t x1, const uint32_t y) {
+  uint64_t m0, m1;
+  asm ("mad.wide.u32 %0, %2, %4, 0;\n\t"
+       "mad.wide.u32 %1, %3, %4, 0;"
+       : "=l"(m0), "=l"(m1)
+       : "r"(x0), "r"(x1), "r"(y));
+  h0=ulow(m0);
+  h1=add_cc(uhigh(m0), ulow(m1));
+  h2=addc(uhigh(m1), 0u);
+}
+
 __device__ __forceinline__ void wmad_mul_2x2(
     uint32_t &p0, uint32_t &p1, uint32_t &p2, uint32_t &p3,
     const uint32_t x0, const uint32_t x1, const uint32_t y0, const uint32_t y1) {
   uint64_t w00=mad_wide(x0, y0, 0);
   uint64_t w11=mad_wide(x1, y1, 0);
-  uint64_t m=mad_wide(x0, y1, 0);
-  uint32_t m0=ulow(m), m1=uhigh(m), mc;
-  m0=madlo_cc(x1, y0, m0);
-  m1=madhic_cc(x1, y0, m1);
-  mc=addc(0, 0);
   p0=ulow(w00);
-  p1=add_cc(uhigh(w00), m0);
-  p2=addc_cc(ulow(w11), m1);
-  p3=addc(uhigh(w11), mc);
+  p1=madlo_cc(x0, y1, uhigh(w00));
+  p2=madhic_cc(x0, y1, ulow(w11));
+  p3=addc(uhigh(w11), 0);
+  p1=madlo_cc(x1, y0, p1);
+  p2=madhic_cc(x1, y0, p2);
+  p3=addc(p3, 0);
 }
 
+__device__ __forceinline__ void wmad_mul_2x2_acc(
+    uint32_t &o0, uint32_t &o1, uint32_t &o2, uint32_t &o3, uint32_t &c_o,
+    const uint32_t x0, const uint32_t x1, const uint32_t y0, const uint32_t y1) {
+  o0=madlo_cc(x0, y0, o0);
+  o1=madhic_cc(x0, y0, o1);
+  o2=madloc_cc(x1, y1, o2);
+  o3=madhic_cc(x1, y1, o3);
+  c_o=addc(0u, 0u);
+
+  o1=madlo_cc(x0, y1, o1);
+  o2=madhic_cc(x0, y1, o2);
+  o3=addc_cc(o3, 0u);
+  c_o=addc(c_o, 0u);
+
+  o1=madlo_cc(x1, y0, o1);
+  o2=madhic_cc(x1, y0, o2);
+  o3=addc_cc(o3, 0u);
+  c_o=addc(c_o, 0u);
+}
 template<int32_t THREAD>
 __device__ __forceinline__ void wmad_cios_pair_tpi8_l4(
     const uint32_t shfl_mask,
@@ -282,28 +312,21 @@ __device__ __forceinline__ void wmad_mont_sqr_tpi8_l4(
   uint32_t g4=group_thread<<2;
   uint32_t g_bit=1u<<group_thread;
 
-
-  // Pack all 8 Step-3 3-bit lane LUT indices, d_src, sh_amt, and prev_lane into two
-  // loop-invariant 32-bit registers (lut_o, lut_e) while allowing all 6 lane predicates
-  // to hoist freely (0 LOP3/ISETP inside loops). Because SHFL.IDX with c=0x181f masks
-  // src_lane & 7 in hardware, packed nibbles require only a single right shift (and 0
-  // shifts for bit [2:0]), hitting REG=48 (83.3% SM occupancy = 40 warps/SM on sm_89)
-  // and 632 dynamic fast-loop instructions.
-  uint32_t lut_o=((0x32540002u>>g4) & 7u)
-                | (((0x43657537u>>g4) & 7u)<<4)
-                | (((0x26431110u>>g4) & 7u)<<8)
-                | (((0x57766421u>>g4) & 7u)<<12)
-                | ((4u+(group_thread>>1))<<16)
-                | ((group_thread>>2)<<20);
-  uint32_t lut_e=((0x25430001u>>g4) & 7u)
-                | (((0x47656427u>>g4) & 7u)<<4)
-                | (((0x11321132u>>g4) & 7u)<<8)
-                | (((0x53765376u>>g4) & 7u)<<12)
-                | (((group_thread+7u) & 7u)<<16);
-  asm ("" : "+r"(lut_o), "+r"(lut_e));
-  uint32_t lo=lut_o, le=lut_e;
-  asm volatile ("" : "+r"(lo), "+r"(le));
-
+  // Single-register loop-invariant LUT + lane-bitmask packing (`lo`):
+  //   bits [15:0]  : 4 x 3-bit source-lane nibbles (i0, j0, i1, j1) for the two Odd 2x2
+  //                  products (SHFL.IDX with c=0x181f masks src_lane & 7 in hardware).
+  //   bits [31:24] : g_bit = 1u << group_thread for all Step-3 lane predicates.
+  // Combinatorial reuse eliminates `lut_e` and 6 subwarp shuffles (611 dynamic SASS insts):
+  //   - Even 2x2 uses `(xi0_0, xi1_0) * (xj0_1, xj1_1)` directly (0 shuffles, 0 LUT bits).
+  //   - Mid  2x1 uses 2 `shfl_xor(..., 4)` butterflies on `(xj0_0, xj1_0)` (0 LUT bits).
+  uint32_t lut_o=((0x25436107u>>g4) & 7u)
+                | (((0x50761432u>>g4) & 7u)<<4)
+                | (((0x36547210u>>g4) & 7u)<<8)
+                | (((0x47650321u>>g4) & 7u)<<12)
+                | (g_bit<<24);
+  asm ("" : "+r"(lut_o));
+  uint32_t lo=lut_o;
+  asm volatile ("" : "+r"(lo));
 
 #ifdef CGBN_DEBUG_MONT_SQR
   uint32_t n0_dbg=wmad_shfl_idx8(shfl_mask, n[0], 0);
@@ -313,17 +336,17 @@ __device__ __forceinline__ void wmad_mont_sqr_tpi8_l4(
   assert((wmad_shfl_idx8(shfl_mask, n[3], 7)>>28)==0u);
 #endif
 
-  uint32_t d_src=lo>>16;
+  uint32_t d_src=4u+(group_thread>>1);
   uint32_t s0=wmad_shfl_idx8(shfl_mask, a[0], d_src);
   uint32_t s2=wmad_shfl_idx8(shfl_mask, a[2], d_src);
   uint32_t s1=wmad_shfl_idx8(shfl_mask, a[1], d_src);
   uint32_t s3=wmad_shfl_idx8(shfl_mask, a[3], d_src);
-  bool     odd_lane=(group_thread & 1u)!=0u;
+  bool     odd_lane=(lo & 0xAA000000u)!=0u;
   uint32_t d0=odd_lane ? s2 : s0;
   uint32_t d1=odd_lane ? s3 : s1;
 
   uint32_t sh_in=wmad_shfl_up8_zero<0x1c00>(shfl_mask, a[3]);
-  uint32_t sh_amt=lo>>20;
+  uint32_t sh_amt=group_thread>>2;
 
   uint32_t v[4];
   v[0]=uleft_wrap(sh_in, a[0], sh_amt);
@@ -355,53 +378,42 @@ __device__ __forceinline__ void wmad_mont_sqr_tpi8_l4(
   {
     uint32_t i0=lo;
     uint32_t j0=lo>>4;
-    uint32_t O0, O1, O2, O3;
-    {
-      uint32_t xi0=wmad_shfl_idx8(shfl_mask, d0, i0);
-      uint32_t xi1=wmad_shfl_idx8(shfl_mask, d1, i0);
-      uint32_t xj0=wmad_shfl_idx8(shfl_mask, d0, j0);
-      uint32_t xj1=wmad_shfl_idx8(shfl_mask, d1, j0);
-      wmad_mul_2x2(O0, O1, O2, O3, xi0, xi1, xj0, xj1);
-    }
+    uint32_t xi0_0=wmad_shfl_idx8(shfl_mask, d0, i0);
+    uint32_t xi1_0=wmad_shfl_idx8(shfl_mask, d1, i0);
+    uint32_t xj0_0=wmad_shfl_idx8(shfl_mask, d0, j0);
+    uint32_t xj1_0=wmad_shfl_idx8(shfl_mask, d1, j0);
+
+    uint32_t A0, A1, A2, A3;
+    wmad_mul_2x2(A0, A1, A2, A3, xi0_0, xi1_0, xj0_0, xj1_0);
+
+    bool accum_p=(lo & 0xBE000000u)!=0u;
+    uint32_t O0=accum_p ? A0 : 0u;
+    uint32_t O1=accum_p ? A1 : 0u;
+    uint32_t O2=accum_p ? A2 : 0u;
+    uint32_t O3=accum_p ? A3 : 0u;
+    uint32_t c_O;
 
     uint32_t i1=lo>>8;
     uint32_t j1=lo>>12;
-    uint32_t P0, P1, P2, P3;
-    {
-      uint32_t xi0=wmad_shfl_idx8(shfl_mask, d0, i1);
-      uint32_t xi1=wmad_shfl_idx8(shfl_mask, d1, i1);
-      uint32_t xj0=wmad_shfl_idx8(shfl_mask, d0, j1);
-      uint32_t xj1=wmad_shfl_idx8(shfl_mask, d1, j1);
-      wmad_mul_2x2(P0, P1, P2, P3, xi0, xi1, xj0, xj1);
-    }
+    uint32_t xi0_1=wmad_shfl_idx8(shfl_mask, d0, i1);
+    uint32_t xi1_1=wmad_shfl_idx8(shfl_mask, d1, i1);
+    uint32_t xj0_1=wmad_shfl_idx8(shfl_mask, d0, j1);
+    uint32_t xj1_1=wmad_shfl_idx8(shfl_mask, d1, j1);
+    wmad_mul_2x2_acc(O0, O1, O2, O3, c_O, xi0_1, xi1_1, xj0_1, xj1_1);
 
-    bool accum_p=(g_bit & 0xBEu)!=0u;
-    uint32_t c_O;
-    {
-      uint32_t a0=accum_p ? P0 : 0u;
-      uint32_t a1=accum_p ? P1 : 0u;
-      uint32_t a2=accum_p ? P2 : 0u;
-      uint32_t a3=accum_p ? P3 : 0u;
-      O0=add_cc(O0, a0);
-      O1=addc_cc(O1, a1);
-      O2=addc_cc(O2, a2);
-      O3=addc_cc(O3, a3);
-      c_O=addc(0, 0);
-    }
+    uint32_t s_o0=accum_p ? O0 : A0;
+    uint32_t s_o1=accum_p ? O1 : A1;
+    uint32_t s_o2=accum_p ? O2 : A2;
+    uint32_t s_o3=accum_p ? O3 : A3;
 
-    uint32_t x0=wmad_shfl_xor8(shfl_mask, O0, 4);
-    uint32_t x1=wmad_shfl_xor8(shfl_mask, O1, 4);
-    uint32_t x2=wmad_shfl_xor8(shfl_mask, O2, 4);
-    uint32_t x3=wmad_shfl_xor8(shfl_mask, O3, 4);
+    uint32_t x0=wmad_shfl_xor8(shfl_mask, s_o0, 4);
+    uint32_t x1=wmad_shfl_xor8(shfl_mask, s_o1, 4);
+    uint32_t x2=wmad_shfl_xor8(shfl_mask, s_o2, 4);
+    uint32_t x3=wmad_shfl_xor8(shfl_mask, s_o3, 4);
     uint32_t xc=wmad_shfl_xor8(shfl_mask, c_O, 4);
 
-    O0=accum_p ? O0 : P0;
-    O1=accum_p ? O1 : P1;
-    O2=accum_p ? O2 : P2;
-    O3=accum_p ? O3 : P3;
-
     {
-      bool recv_o=(g_bit & 0x1Cu)!=0u;
+      bool recv_o=(lo & 0x1C000000u)!=0u;
       uint32_t r0_m=recv_o ? x0 : 0u;
       uint32_t r1_m=recv_o ? x1 : 0u;
       uint32_t r2_m=recv_o ? x2 : 0u;
@@ -419,48 +431,35 @@ __device__ __forceinline__ void wmad_mont_sqr_tpi8_l4(
       uint32_t e1_in=wmad_shfl_up8_zero<0x1800>(shfl_mask, O3);
       uint32_t upc_m=wmad_shfl_up8_zero<0x1800>(shfl_mask, c_O);
 
-      bool     not_g7=group_thread!=7u;
+      bool     not_g7=(lo & 0x7F000000u)!=0u;
       uint32_t o0_m=not_g7 ? O0 : 0u;
       uint32_t o1_m=not_g7 ? O1 : 0u;
 
-      uint64_t intra=mad_wide(d0, d1, 0);
-      E2=add_cc(o0_m, upc_m);
-      E3=addc_cc(o1_m, 0u);
-      c_E=addc(0u, 0u);
+      uint32_t s2=add_cc(o0_m, upc_m);
+      uint32_t s3=addc_cc(o1_m, 0u);
+      uint32_t sc=addc(0u, 0u);
 
-      E1=add_cc(e1_in, ulow(intra));
-      E2=addc_cc(E2, uhigh(intra));
-      E3=addc_cc(E3, 0u);
-      c_E=addc(c_E, 0u);
+      E1=madlo_cc(d0, d1, e1_in);
+      E2=madhic_cc(d0, d1, s2);
+      E3=addc_cc(s3, 0u);
+      c_E=addc(sc, 0u);
     }
 
-    uint32_t ie=le;
-    uint32_t je=le>>4;
+    uint32_t P0, P1, P2, P3;
+    wmad_mul_2x2(P0, P1, P2, P3, xi0_0, xi1_0, xj0_1, xj1_1);
+
     {
-      uint32_t xi0=wmad_shfl_idx8(shfl_mask, d0, ie);
-      uint32_t xi1=wmad_shfl_idx8(shfl_mask, d1, ie);
-      uint32_t xj0=wmad_shfl_idx8(shfl_mask, d0, je);
-      uint32_t xj1=wmad_shfl_idx8(shfl_mask, d1, je);
-      wmad_mul_2x2(P0, P1, P2, P3, xi0, xi1, xj0, xj1);
-    }
+      uint32_t u0=wmad_shfl_xor8(shfl_mask, xj0_0, 4);
+      uint32_t u1=wmad_shfl_xor8(shfl_mask, xj1_0, 4);
+      bool     owns_mid=(lo & 0x3C000000u)!=0u;
+      uint32_t my0=owns_mid ? xj0_0 : u0;
+      uint32_t my1=owns_mid ? xj1_0 : u1;
+      uint32_t mx =owns_mid ? u1    : xj0_0;
 
-    uint32_t im=le>>8;
-    uint32_t jm=le>>12;
-    {
-      uint32_t xi0=wmad_shfl_idx8(shfl_mask, d0, im);
-      uint32_t xi1=wmad_shfl_idx8(shfl_mask, d1, im);
-      uint32_t dj0=wmad_shfl_idx8(shfl_mask, d0, jm);
-      uint32_t dj1=wmad_shfl_idx8(shfl_mask, d1, jm);
-      bool     owns_mid=(g_bit & 0x3Cu)!=0u;
-      uint32_t bj=owns_mid ? dj1 : dj0;
+      uint32_t h0, h1, h2;
+      wmad_mul_2x1(h0, h1, h2, my0, my1, mx);
 
-      uint64_t m0=mad_wide(xi0, bj, 0);
-      uint32_t h0=ulow(m0);
-      uint64_t m1=mad_wide(xi1, bj, (uint64_t)uhigh(m0));
-      uint32_t h1=ulow(m1);
-      uint32_t h2=uhigh(m1);
-
-      bool     keep_e=(g_bit & 0x7Eu)!=0u;
+      bool     keep_e=(lo & 0x7E000000u)!=0u;
       uint32_t kp0=keep_e ? P0 : 0u;
       uint32_t kp1=keep_e ? P1 : 0u;
       uint32_t kp2=keep_e ? P2 : 0u;
@@ -527,7 +526,7 @@ __device__ __forceinline__ void wmad_mont_sqr_tpi8_l4(
   if(group_thread==7u) assert(r1==0u);
 #endif
 
-  uint32_t t_up=wmad_shfl_idx8(shfl_mask, r1, le>>16);
+  uint32_t t_up=wmad_shfl_idx8(shfl_mask, r1, (group_thread+7u) & 7u);
 
   ra[0]=add_cc(ra[0], t_up);
   ra[1]=addc_cc(ra[1], 0);
