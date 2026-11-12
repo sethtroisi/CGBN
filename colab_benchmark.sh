@@ -8,6 +8,7 @@ LOCAL_CSV="${CSV_FILE:-${REPO_ROOT}/benchmark_results.csv}"
 SESSION="${SESSION:-}"
 GPU="${GPU:-T4}"
 ARCH="${ARCH:-}"
+TAG="${TAG:-}"
 STOP_AFTER=0
 BENCH_ARGS=()
 
@@ -28,6 +29,7 @@ Options:
                          T4, L4, G4, A100, H100 (default: ${GPU}).
   --arch <target|sm_XX>  CUDA arch / Makefile target override on Colab
                          (default: auto-detected via nvidia-smi).
+  --tag <label>          Optional tag to label runs sharing a git hash (or \$TAG).
   -o, --csv <path>       Local CSV file to append results to
                          (default: ${LOCAL_CSV}).
   --stop                 Stop the Colab session on exit if created by this run.
@@ -70,6 +72,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --arch=*)
       ARCH="${1#*=}"
+      shift
+      ;;
+    --tag)
+      [[ $# -ge 2 ]] || { echo "Error: --tag requires a label" >&2; exit 1; }
+      TAG="$2"
+      shift 2
+      ;;
+    --tag=*)
+      TAG="${1#*=}"
       shift
       ;;
     -o|--csv)
@@ -132,7 +143,11 @@ GIT_HASH="$(git -C "$REPO_ROOT" rev-parse --short=10 HEAD)"
 if ! git -C "$REPO_ROOT" diff --quiet HEAD --; then
   GIT_HASH="${GIT_HASH}-dirty"
 fi
-echo "Local git hash: ${GIT_HASH}"
+if [[ -n "$TAG" ]]; then
+  echo "Local git hash: ${GIT_HASH} (tag: ${TAG})"
+else
+  echo "Local git hash: ${GIT_HASH}"
+fi
 
 # 2. Tar all git-tracked files in the repository
 LOCAL_TAR="$TMP_DIR/cgbn.tar.gz"
@@ -184,7 +199,7 @@ echo "Uploading archive to Colab session '${SESSION}' ..."
 REMOTE_RUNNER="${REPO_ROOT}/samples/sample_05_mont_sqr/colab_remote_run.sh"
 echo "Untarring, compiling, and running benchmark on Colab session '${SESSION}' ..."
 "${COLAB[@]}" ssh -s "$SESSION" -- \
-  bash -s -- "$GIT_HASH" "$ARCH" "/${REMOTE_CSV}" ${BENCH_ARGS[@]+"${BENCH_ARGS[@]}"} \
+  bash -s -- "$GIT_HASH" "$TAG" "$ARCH" "/${REMOTE_CSV}" ${BENCH_ARGS[@]+"${BENCH_ARGS[@]}"} \
   < "$REMOTE_RUNNER"
 
 # 6. Download the resulting CSV and append to local CSV
@@ -201,8 +216,13 @@ if [[ ! -s "$LOCAL_CSV" ]]; then
   cp "$DOWNLOADED_CSV" "$LOCAL_CSV"
   ADDED_ROWS="$(($(wc -l < "$DOWNLOADED_CSV") - 1))"
 else
+  EXISTING_HEADER="$(head -n 1 "$LOCAL_CSV")"
+  DOWNLOADED_HEADER="$(head -n 1 "$DOWNLOADED_CSV")"
+  if [[ "$EXISTING_HEADER" != "$DOWNLOADED_HEADER" ]]; then
+    echo "Warning: CSV header in ${LOCAL_CSV} does not match downloaded header (${DOWNLOADED_HEADER})" >&2
+  fi
   tail -n +2 "$DOWNLOADED_CSV" >> "$LOCAL_CSV"
   ADDED_ROWS="$(tail -n +2 "$DOWNLOADED_CSV" | wc -l | tr -d '[:space:]')"
 fi
 
-echo "Appended ${ADDED_ROWS} row(s) from Colab session '${SESSION}' to ${LOCAL_CSV}"
+echo "Appended ${ADDED_ROWS} row(s) from Colab session '${SESSION}'${TAG:+ (tag: ${TAG})} to ${LOCAL_CSV}"

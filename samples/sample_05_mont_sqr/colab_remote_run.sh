@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Runs inside a Google Colab VM (typically piped via `colab ssh -s <sess> -- bash -s -- ...`).
-# Usage: colab_remote_run.sh <git_hash> <arch> <remote_csv> [mont_sqr options...]
+# Usage: colab_remote_run.sh <git_hash> <tag> <arch> <remote_csv> [mont_sqr options...]
 set -euo pipefail
 
-if [[ $# -lt 3 ]]; then
-  echo "Usage: $0 <git_hash> <arch> <remote_csv> [mont_sqr options...]" >&2
+if [[ $# -lt 4 ]]; then
+  echo "Usage: $0 <git_hash> <tag> <arch> <remote_csv> [mont_sqr options...]" >&2
   exit 1
 fi
 
 export GIT_HASH="$1"
-export ARCH="$2"
-REMOTE_CSV="$3"
-shift 3
+export TAG="$2"
+export ARCH="$3"
+REMOTE_CSV="$4"
+shift 4
 
 export PATH="/usr/local/cuda/bin:$PATH"
 

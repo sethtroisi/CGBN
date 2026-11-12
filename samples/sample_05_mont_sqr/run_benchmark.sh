@@ -6,6 +6,7 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || (cd "
 
 CSV_FILE="${CSV_FILE:-${SCRIPT_DIR}/benchmark_results.csv}"
 ARCH="${ARCH:-}"
+TAG="${TAG:-}"
 BENCH_BIN="${BENCH_BIN:-${SCRIPT_DIR}/mont_sqr}"
 DO_BUILD=1
 BENCH_ARGS=()
@@ -21,6 +22,7 @@ Wrapper options:
   --arch <target|sm_XX>  Makefile target (kepler, maxwell, pascal, volta, turing,
                          ampere, ada, hopper) or CUDA arch (e.g. sm_61, sm_86).
                          Defaults to auto-detecting via nvidia-smi (or \$ARCH).
+  --tag <label>          Optional tag to label runs sharing a git hash (or \$TAG).
   -o, --csv <path>       CSV file to append results to (or \$CSV_FILE).
                          Default: ${SCRIPT_DIR}/benchmark_results.csv
   --no-build             Skip compilation and run existing binary.
@@ -45,6 +47,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --arch=*)
       ARCH="${1#*=}"
+      shift
+      ;;
+    --tag)
+      [[ $# -ge 2 ]] || { echo "Error: --tag requires a label" >&2; exit 1; }
+      TAG="$2"
+      shift 2
+      ;;
+    --tag=*)
+      TAG="${1#*=}"
       shift
       ;;
     -o|--csv)
@@ -120,7 +131,11 @@ if [[ -z "${GIT_HASH:-}" ]]; then
   fi
 fi
 
-echo "Git hash: ${GIT_HASH}"
+if [[ -n "$TAG" ]]; then
+  echo "Git hash: ${GIT_HASH} (tag: ${TAG})"
+else
+  echo "Git hash: ${GIT_HASH}"
+fi
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   if [[ -z "$ARCH" ]]; then
@@ -154,11 +169,19 @@ TIMESTAMP="$(date -Iseconds)"
 echo "Running ${BENCH_BIN} ${BENCH_ARGS[*]+"${BENCH_ARGS[*]}"} ..."
 "$BENCH_BIN" ${BENCH_ARGS[@]+"${BENCH_ARGS[@]}"} | tee "$TMP_OUT"
 
-CSV_ROWS="$(awk \
+CSV_ROWS="$(BENCH_TAG="$TAG" awk \
   -v ts="$TIMESTAMP" \
   -v hash="$GIT_HASH" \
   -v arch="$ARCH" \
   '
+  BEGIN {
+    tag = ENVIRON["BENCH_TAG"]
+    gsub(/\r/, "", tag)
+    gsub(/"/, "\"\"", tag)
+    if (tag ~ /[,"\n]/) {
+      tag = "\"" tag "\""
+    }
+  }
   /^GPU[[:space:]]*:/ {
     gpu = $0
     sub(/^GPU[[:space:]]*:[[:space:]]*/, "", gpu)
@@ -196,8 +219,8 @@ CSV_ROWS="$(awk \
   }
   /^All [0-9]+ results match!/ {
     cpu_s = $11
-    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,PASS\n", \
-      ts, hash, gpu, arch, bits, tpi, instances, iterations, runs, \
+    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,PASS\n", \
+      ts, hash, tag, gpu, arch, bits, tpi, instances, iterations, runs, \
       avg_ms, best_ms, avg_tp, best_tp, ns_per_sqr, cpu_s
     rows++
   }
@@ -211,11 +234,14 @@ CSV_ROWS="$(awk \
   exit 1
 }
 
+CSV_HEADER="timestamp,git_hash,tag,gpu,arch,bits,tpi,instances,iterations,runs,avg_ms,best_ms,avg_msqr_per_s,best_msqr_per_s,ns_per_sqr,cpu_s,verified"
 mkdir -p "$(dirname "$CSV_FILE")"
 if [[ ! -s "$CSV_FILE" ]]; then
-  echo "timestamp,git_hash,gpu,arch,bits,tpi,instances,iterations,runs,avg_ms,best_ms,avg_msqr_per_s,best_msqr_per_s,ns_per_sqr,cpu_s,verified" > "$CSV_FILE"
+  echo "$CSV_HEADER" > "$CSV_FILE"
+elif [[ "$(head -n 1 "$CSV_FILE")" != "$CSV_HEADER" ]]; then
+  echo "Warning: CSV header in ${CSV_FILE} does not match expected schema (${CSV_HEADER})" >&2
 fi
 printf "%s\n" "$CSV_ROWS" >> "$CSV_FILE"
 
 ROW_COUNT="$(printf "%s\n" "$CSV_ROWS" | wc -l | tr -d '[:space:]')"
-echo "Appended ${ROW_COUNT} benchmark row(s) for git ${GIT_HASH} to ${CSV_FILE}"
+echo "Appended ${ROW_COUNT} benchmark row(s) for git ${GIT_HASH}${TAG:+ (tag: ${TAG})} to ${CSV_FILE}"
