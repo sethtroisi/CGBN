@@ -94,6 +94,10 @@ class core_singleton_t<env, 1> {
     core_t<env>::mont_mul(r[0], a[0], b[0], n[0], np0);
   }
 
+  __device__ __forceinline__ static void      mont_sqr(uint32_t r[limbs], const uint32_t a[limbs], const uint32_t n[limbs], const uint32_t np0) {
+    core_t<env>::mont_mul(r[0], a[0], a[0], n[0], np0);
+  }
+
   __device__ __forceinline__ static void      mont_reduce_wide(uint32_t r[limbs], const uint32_t lo[limbs], const uint32_t hi[limbs], const uint32_t n[limbs], const uint32_t np0, const bool zero) {
     core_t<env>::mont_reduce_wide(r[0], lo[0], hi[0], n[0], np0, zero);
   }
@@ -159,6 +163,10 @@ class core_singleton_t {
   
   __device__ __forceinline__ static void      mont_mul(uint32_t r[limbs], const uint32_t a[limbs], const uint32_t b[limbs], const uint32_t n[limbs], const uint32_t np0) {
     core_t<env>::mont_mul(r, a, b, n, np0);
+  }
+
+  __device__ __forceinline__ static void      mont_sqr(uint32_t r[limbs], const uint32_t a[limbs], const uint32_t n[limbs], const uint32_t np0) {
+    core_t<env>::mont_sqr(r, a, n, np0);
   }
   
   __device__ __forceinline__ static void      mont_reduce_wide(uint32_t r[limbs], const uint32_t lo[limbs], const uint32_t hi[limbs], const uint32_t n[limbs], const uint32_t np0, const bool zero) {
