@@ -22,7 +22,9 @@ IN THE SOFTWARE.
 
 ***/
 
+#include <errno.h>
 #include <float.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,8 +49,8 @@ IN THE SOFTWARE.
  ************************************************************************************************/
 
 #define DEFAULT_INSTANCES  (100*1024)
-#define DEFAULT_ITERATIONS 256
-#define DEFAULT_RUNS       5
+#define DEFAULT_ITERATIONS 1024
+#define DEFAULT_RUNS       10
 #define DEFAULT_TPI        8
 #define DEFAULT_SEED       1
 
@@ -355,7 +357,7 @@ bool run_benchmark(uint32_t instance_count, uint32_t iterations, uint32_t runs, 
   CGBN_CHECK(report);
 
   printf("Warming up GPU mont_sqr kernel ...\n");
-  kernel_mont_sqr<params><<<blocks, TPB>>>(report, gpuInstances, instance_count, iterations);
+  kernel_mont_sqr<params><<<blocks, TPB>>>(report, gpuInstances, instance_count, 5*iterations);
   CUDA_CHECK(cudaDeviceSynchronize());
   CGBN_CHECK(report);
 
@@ -431,6 +433,33 @@ static void print_usage(const char *prog) {
   printf("  -h               Show this help message\n");
 }
 
+static bool parse_ulong_arg(const char *opt, const char *val_str, unsigned long *out) {
+  if(val_str==NULL || *val_str=='\0' || *val_str=='-') {
+    fprintf(stderr, "Error: invalid value for %s: '%s'\n", opt, val_str ? val_str : "");
+    return false;
+  }
+  char *end=NULL;
+  errno=0;
+  unsigned long val=strtoul(val_str, &end, 10);
+  if(errno!=0 || end==val_str || *end!='\0') {
+    fprintf(stderr, "Error: invalid value for %s: '%s'\n", opt, val_str);
+    return false;
+  }
+  *out=val;
+  return true;
+}
+
+static bool parse_u32_arg(const char *opt, const char *val_str, uint32_t *out) {
+  unsigned long val=0;
+  if(!parse_ulong_arg(opt, val_str, &val) || val>UINT32_MAX) {
+    if(val>UINT32_MAX)
+      fprintf(stderr, "Error: value out of range for %s: '%s'\n", opt, val_str);
+    return false;
+  }
+  *out=(uint32_t)val;
+  return true;
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IOLBF, 0);
 
@@ -443,19 +472,19 @@ int main(int argc, char **argv) {
 
   for(int arg=1;arg<argc;arg++) {
     if(strcmp(argv[arg], "-n")==0 && arg+1<argc) {
-      instances=(uint32_t)strtoul(argv[++arg], NULL, 10);
+      if(!parse_u32_arg("-n", argv[++arg], &instances)) return 1;
     }
     else if(strcmp(argv[arg], "-i")==0 && arg+1<argc) {
-      iterations=(uint32_t)strtoul(argv[++arg], NULL, 10);
+      if(!parse_u32_arg("-i", argv[++arg], &iterations)) return 1;
     }
     else if(strcmp(argv[arg], "-r")==0 && arg+1<argc) {
-      runs=(uint32_t)strtoul(argv[++arg], NULL, 10);
+      if(!parse_u32_arg("-r", argv[++arg], &runs)) return 1;
     }
     else if(strcmp(argv[arg], "-t")==0 && arg+1<argc) {
-      tpi=(uint32_t)strtoul(argv[++arg], NULL, 10);
+      if(!parse_u32_arg("-t", argv[++arg], &tpi)) return 1;
     }
     else if(strcmp(argv[arg], "-s")==0 && arg+1<argc) {
-      seed=strtoul(argv[++arg], NULL, 10);
+      if(!parse_ulong_arg("-s", argv[++arg], &seed)) return 1;
     }
     else if(strcmp(argv[arg], "-a")==0) {
       all_tpi=true;
@@ -471,8 +500,8 @@ int main(int argc, char **argv) {
     }
   }
 
-  if(instances==0 || runs==0) {
-    fprintf(stderr, "Error: instances and runs must be >= 1\n");
+  if(instances==0 || iterations==0 || runs==0) {
+    fprintf(stderr, "Error: instances, iterations, and runs must be >= 1\n");
     return 1;
   }
 
