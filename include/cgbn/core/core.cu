@@ -177,6 +177,14 @@ class core_t {
     // instead, for now, always use
     return instance_sync_mask();
   }
+
+  __device__ __forceinline__ static uint32_t warp_sync_mask() {
+    // All the threads of the warp that are executing the current code path.  The threads of an instance are
+    // always converged, so this is a union of whole instances and can be used to sync the shuffles between
+    // the threads of an instance.  Unlike instance_sync_mask(), it is the same on every thread of the warp,
+    // which lets the compiler emit the shuffles inline, and it can be used for warp wide votes.
+    return __activemask();
+  }
   
   
   /* BN ROUTINES */
