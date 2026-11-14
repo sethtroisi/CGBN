@@ -46,7 +46,7 @@ class dispatch_resolver_t {
     uint32_t p, c;
     int32_t  result;
     
-    p=__ballot_sync(sync, x==0 && group_thread!=tpi-1);
+    p=__ballot_sync(sync, x==0 && group_thread!=tpi-1) & sync;
     c=(p+GROUP_ONES^p)&lane;
     add_cc(c, 0xFFFFFFFF);
     x=subc_cc(0, x);
@@ -62,7 +62,7 @@ class dispatch_resolver_t {
     int32_t  result;
     
     lor=mplor<LIMBS>(x);
-    p=__ballot_sync(sync, lor==0 && group_thread!=tpi-1);
+    p=__ballot_sync(sync, lor==0 && group_thread!=tpi-1) & sync;
     c=(p+GROUP_ONES^p)&lane;
     
     chain_t<> chain;
@@ -90,8 +90,8 @@ class dispatch_resolver_t {
     uint32_t g, p, c;
     int32_t  result;
   
-    g=__ballot_sync(sync, carry==1);
-    p=__ballot_sync(sync, x==0xFFFFFFFF && group_thread!=0);
+    g=__ballot_sync(sync, carry==1) & sync;
+    p=__ballot_sync(sync, x==0xFFFFFFFF && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
     x=x+(c!=0);
@@ -108,8 +108,8 @@ class dispatch_resolver_t {
     int32_t  result;
     
     land=mpland<LIMBS>(x);
-    g=__ballot_sync(sync, carry==1);
-    p=__ballot_sync(sync, land==0xFFFFFFFF && group_thread!=0);
+    g=__ballot_sync(sync, carry==1) & sync;
+    p=__ballot_sync(sync, land==0xFFFFFFFF && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
     
@@ -133,8 +133,8 @@ class dispatch_resolver_t {
     uint32_t g, p, c;
     int32_t  result;
     
-    g=__ballot_sync(sync, carry==0xFFFFFFFF);
-    p=__ballot_sync(sync, x==0 && group_thread!=0);
+    g=__ballot_sync(sync, carry==0xFFFFFFFF) & sync;
+    p=__ballot_sync(sync, x==0 && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
     x=x-(c!=0);
@@ -150,8 +150,8 @@ class dispatch_resolver_t {
     int32_t  result;
      
     lor=mplor<LIMBS>(x);
-    g=__ballot_sync(sync, carry==0xFFFFFFFF);
-    p=__ballot_sync(sync, lor==0 && group_thread!=0);
+    g=__ballot_sync(sync, carry==0xFFFFFFFF) & sync;
+    p=__ballot_sync(sync, lor==0 && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
     c=(c==0) ? 0 : 0xFFFFFFFF;
@@ -182,8 +182,8 @@ class dispatch_resolver_t {
     x=add_cc(x, c);
     c=addc(0, 0);
 
-    g=__ballot_sync(sync, c==1);
-    p=__ballot_sync(sync, x==0xFFFFFFFF && group_thread!=0);
+    g=__ballot_sync(sync, c==1) & sync;
+    p=__ballot_sync(sync, x==0xFFFFFFFF && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
     x=x+(c!=0);
@@ -208,8 +208,8 @@ class dispatch_resolver_t {
     c=addc(0, 0);
   
     land=mpland<LIMBS>(x);
-    g=__ballot_sync(sync, c==1);
-    p=__ballot_sync(sync, land==0xFFFFFFFF && group_thread!=0);
+    g=__ballot_sync(sync, c==1) & sync;
+    p=__ballot_sync(sync, land==0xFFFFFFFF && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
     
@@ -238,8 +238,8 @@ class dispatch_resolver_t {
     x=add_cc(x, c);
     c=addc(0, c>>31);
 
-    g=__ballot_sync(sync, c==0xFFFFFFFF);
-    p=__ballot_sync(sync, x==0 && group_thread!=0);
+    g=__ballot_sync(sync, c==0xFFFFFFFF) & sync;
+    p=__ballot_sync(sync, x==0 && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
     x=x-(c!=0);
@@ -269,8 +269,8 @@ class dispatch_resolver_t {
     c=addc(0, c);
   
     lor=mplor<LIMBS>(x);
-    g=__ballot_sync(sync, c==0xFFFFFFFF);
-    p=__ballot_sync(sync, lor==0 && group_thread!=0);
+    g=__ballot_sync(sync, c==0xFFFFFFFF) & sync;
+    p=__ballot_sync(sync, lor==0 && group_thread!=0) & sync;
   
     c=lane & (g+g+p ^ p);
   
