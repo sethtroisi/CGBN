@@ -24,6 +24,165 @@ IN THE SOFTWARE.
 
 namespace cgbn {
 
+/****************************************************************************************************
+ * One radix 2^64 step of word serial Montgomery multiplication, for even LIMBS and no padding:
+ *
+ *    (ra, ru, c) = ((ra, ru, c) + (t1:t0) * a + (q1:q0) * n) / 2^64
+ *
+ * The running value is kept in the same redundant form as in mont_mul below:  ra holds the aligned
+ * words (ra[i] at word i), ru the unaligned words (ru[i] at word i+1) and c is a carry into ra[0].
+ * q0 and q1 are chosen so that the two low words (on thread 0) become zero.  Each thread passes its
+ * two low words down to the thread below; the top thread shifts in zeros.
+ *
+ * With multiply==false the (t1:t0) * a terms are skipped, which gives a Montgomery reduction step.
+ * In that case a, t0 and t1 are not used.
+ ****************************************************************************************************/
+template<class env> template<bool multiply>
+__device__ __forceinline__ void core_t<env>::mont_step(uint32_t ra[LIMBS+2], uint32_t ru[LIMBS+1], uint32_t &c, const uint32_t a[LIMBS], const uint32_t t0, const uint32_t t1, const uint32_t n[LIMBS], const uint32_t np0, const uint32_t sync) {
+  uint32_t q, t;
+
+  /* FIRST HALF */
+
+  chain_t<> chain1;                                   // unaligned: T0 * A_odd
+  ra[0]=chain1.add(ra[0], c);
+  if(multiply) {
+    #pragma unroll
+    for(int32_t index=0;index<LIMBS;index+=2) {
+      ru[index]=chain1.madlo(a[index+1], t0, ru[index]);
+      ru[index+1]=chain1.madhi(a[index+1], t0, ru[index+1]);
+    }
+
+    chain_t<> chain2;                                 // aligned:   T0 * A_even
+    #pragma unroll
+    for(int32_t index=0;index<LIMBS;index+=2) {
+      ra[index]=chain2.madlo(a[index], t0, ra[index]);
+      ra[index+1]=chain2.madhi(a[index], t0, ra[index+1]);
+    }
+    ra[LIMBS]=chain2.add(ra[LIMBS], 0);
+  }
+
+  q=__shfl_sync(sync, ra[0], 0, TPI)*np0;
+
+  // when not multiplying, this chain continues chain1, to pick up the carry from ra[0]+c
+  chain_t<CGBN_INF_CHAIN, !multiply> chain3;          // unaligned: Q0 * N_odd
+  #pragma unroll
+  for(int32_t index=0;index<LIMBS;index+=2) {
+    ru[index]=chain3.madlo(n[index+1], q, ru[index]);
+    ru[index+1]=chain3.madhi(n[index+1], q, ru[index+1]);
+  }
+  if(multiply)
+    ru[LIMBS]=chain3.add(0, 0);                       // a reduction step can not carry out here
+
+  chain_t<> chain4;                                   // aligned:   Q0 * N_even
+  ra[0]=chain4.madlo(n[0], q, ra[0]);
+  ra[1]=chain4.madhi(n[0], q, ra[1]);
+  t=__shfl_sync(sync, ra[0], threadIdx.x+1, TPI);     // ra[0] is now zero on thread 0
+  #pragma unroll
+  for(int32_t index=2;index<LIMBS;index+=2) {
+    ra[index]=chain4.madlo(n[index], q, ra[index]);
+    ra[index+1]=chain4.madhi(n[index], q, ra[index+1]);
+  }
+  ra[LIMBS]=chain4.add(ra[LIMBS], t);
+  ra[LIMBS+1]=chain4.add(0, 0);
+
+  /* SECOND HALF */
+
+  if(multiply) {
+    chain_t<> chain5;                                 // unaligned: T1 * A_even
+    #pragma unroll
+    for(int32_t index=0;index<LIMBS;index+=2) {
+      ru[index]=chain5.madlo(a[index], t1, ru[index]);
+      ru[index+1]=chain5.madhi(a[index], t1, ru[index+1]);
+    }
+    ru[LIMBS]=chain5.add(ru[LIMBS], 0);
+
+    chain_t<> chain6;                                 // aligned:   T1 * A_odd
+    #pragma unroll
+    for(int32_t index=0;index<LIMBS;index+=2) {
+      ra[index+2]=chain6.madlo(a[index+1], t1, ra[index+2]);
+      ra[index+3]=chain6.madhi(a[index+1], t1, ra[index+3]);
+    }
+  }
+
+  chain_t<> chain7;                                   // aligned:   Q1 * N_odd
+  ru[0]=chain7.add(ru[0], ra[1]);
+  q=__shfl_sync(sync, ru[0], 0, TPI)*np0;
+  #pragma unroll
+  for(int32_t index=0;index<LIMBS;index+=2) {
+    ra[index]=chain7.madlo(n[index+1], q, ra[index+2]);
+    ra[index+1]=chain7.madhi(n[index+1], q, ra[index+3]);
+  }
+  if(multiply)
+    ra[LIMBS]=chain7.add(0, 0);
+  else
+    ra[LIMBS]=0;                                      // a reduction step can not carry out here
+
+  chain_t<> chain8;                                   // unaligned: Q1 * N_even
+  t=chain8.madlo(n[0], q, ru[0]);
+  c=chain8.madhi(n[0], q, ru[1]);
+  t=__shfl_sync(sync, t, threadIdx.x+1, TPI);         // t was zero on thread 0
+  #pragma unroll
+  for(int32_t index=0;index<LIMBS-2;index+=2) {
+    ru[index]=chain8.madlo(n[index+2], q, ru[index+2]);
+    ru[index+1]=chain8.madhi(n[index+2], q, ru[index+3]);
+  }
+  ru[LIMBS-2]=chain8.add(ru[LIMBS], t);
+  ru[LIMBS-1]=chain8.add(0, 0);
+  ru[LIMBS]=0;
+}
+
+/****************************************************************************************************
+ * Final step of a Montgomery multiplication.  On each thread, ra + r1 * 2^(32*LIMBS) holds the
+ * thread's share of the (unresolved) result U, with r1 small and U < 2R.  Resolves the carries
+ * between the threads and subtracts n if U >= R (almost Montgomery reduction).
+ ****************************************************************************************************/
+template<class env>
+__device__ __forceinline__ void core_t<env>::mont_normalize(uint32_t r[LIMBS], uint32_t ra[LIMBS], uint32_t r1, const uint32_t n[LIMBS], const uint32_t sync) {
+  const uint32_t TOP_THREADS=(0xFFFFFFFF/TPI_ONES)<<TPI-1;      // the top thread of each instance in the warp
+  uint32_t       group_thread=threadIdx.x & TPI-1;
+  uint32_t       t, c, vote;
+
+  t=__shfl_up_sync(sync, r1, 1, TPI);
+
+  // all but most significant thread clears r1
+  if(group_thread!=TPI-1)
+    r1=0;
+  if(group_thread==0)
+    t=0;
+
+  chain_t<LIMBS+1> chain1;
+  ra[0]=chain1.add(ra[0], t);
+  #pragma unroll
+  for(int32_t index=1;index<LIMBS;index++)
+    ra[index]=chain1.add(ra[index], 0);
+  c=chain1.add(r1, 0);
+
+  // c is set if a carry leaves the thread or, on the top thread, if U >= R.  Unless the modulus uses all
+  // of the bits, both are rare, so take one ballot across the warp and usually skip the rest.
+  vote=__ballot_sync(sync, c!=0);
+  if(vote!=0) {
+    // A carry between threads is very rare.  Without one, only top threads have voted, and the
+    // instance needs the subtraction if its top thread did.
+    if((vote & ~TOP_THREADS)!=0)
+      c=fast_propagate_add(c, ra);
+    else
+      c=(vote & instance_sync_mask())!=0;
+    c=-c;
+
+    // compute -n
+    t=n[0]-(group_thread==0);   // n must be odd, so there is no chance for a carry ripple
+
+    chain_t<LIMBS+1> chain2;
+    ra[0]=chain2.add(ra[0], ~t & c);
+    #pragma unroll
+    for(int32_t index=1;index<LIMBS;index++)
+      ra[index]=chain2.add(ra[index], ~n[index] & c);
+    c=chain2.add(0, 0);
+    fast_propagate_add(c, ra);
+  }
+  mpset<LIMBS>(r, ra);
+}
+
 #if 1
 template<class env>
 __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const uint32_t a[LIMBS], const uint32_t b[LIMBS], const uint32_t n[LIMBS], const uint32_t np0) {
@@ -36,7 +195,31 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
     ru[index]=0;
   }
   ra[LIMBS+1]=0;
-  
+
+  if(MONT_UNROLLED) {
+    // even LIMBS, no padding, up to 4096 bits:  fully unrolled, with warp wide syncs
+    sync=warp_sync_mask();
+    #pragma unroll
+    for(int32_t thread=0;thread<TPI;thread++) {
+      #pragma unroll
+      for(int32_t word=0;word<LIMBS;word+=2) {
+        t0=__shfl_sync(sync, b[word], thread, TPI);
+        t1=__shfl_sync(sync, b[word+1], thread, TPI);
+        mont_step<true>(ra, ru, c, a, t0, t1, n, np0, sync);
+      }
+    }
+
+    chain_t<LIMBS+1> chain0;
+    ra[0]=chain0.add(ra[0], c);
+    #pragma unroll
+    for(int32_t index=1;index<LIMBS;index++)
+      ra[index]=chain0.add(ra[index], ru[index-1]);
+    r1=chain0.add(ra[LIMBS], ru[LIMBS-1]);
+
+    mont_normalize(r, ra, r1, n, sync);
+    return;
+  }
+
   #pragma nounroll
   for(int32_t thread=0;thread<TPI;thread+=2) {
     #pragma unroll
