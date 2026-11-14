@@ -976,15 +976,92 @@ __device__ __forceinline__ void cgbn_env_t<context_t, bits, syncable>::gcd(cgbn_
   cgbn::core_t<unpadded>::gcd(r._limbs, a._limbs, b._limbs);
 }
 
+/* bn2mont needs a remainder, but the division routines are only implemented for LIMBS<=TPI.  The
+ * Montgomery routines have no such limit (and are fastest with few threads and many limbs), so for
+ * LIMBS>TPI the conversion is done without a division:
+ *
+ *    t = 2^k - n,  where k is the bit length of n       (this is 2^k mod n, since n is odd)
+ *    double t mod n,  until  t = R * 2^w mod n          (the Montgomery form of 2^w)
+ *    square t  s times,  with mont_sqr                  (the Montgomery form of 2^(w*2^s))
+ *
+ * where log2(R) = w * 2^s with w odd, so that t = R^2 mod n, and mont = mont_mul(bn, t).
+ */
+namespace cgbn {
+
+template<class env_t, bool divide>
+struct dispatch_bn2mont_t {
+  __device__ __forceinline__ static uint32_t bn2mont(const env_t &env, typename env_t::cgbn_t &mont, const typename env_t::cgbn_t &bn, const typename env_t::cgbn_t &n, const uint32_t low) {
+    typedef cgbn::unpadded_t<env_t> unpadded;
+    typedef cgbn::core_t<unpadded> core;
+    typedef cgbn::core_singleton_t<unpadded, env_t::LIMBS> singleton;
+
+    uint32_t num_low[env_t::LIMBS], num_high[env_t::LIMBS], n_local[env_t::LIMBS];
+    uint32_t shift;
+
+    // for padded values, we use a larger R
+    cgbn::mpzero<env_t::LIMBS>(num_low);
+    shift=core::clz(n._limbs);
+    core::rotate_left(n_local, n._limbs, shift);
+    core::rotate_left(num_high, bn._limbs, shift);
+    singleton::rem_wide(mont._limbs, num_low, num_high, n_local, env_t::TPI);
+    core::shift_right(mont._limbs, mont._limbs, shift);
+    return -cgbn::ubinary_inverse(low);
+  }
+};
+
+template<class env_t>
+struct dispatch_bn2mont_t<env_t, false> {
+  __device__ __forceinline__ static uint32_t bn2mont(const env_t &env, typename env_t::cgbn_t &mont, const typename env_t::cgbn_t &bn, const typename env_t::cgbn_t &n, const uint32_t low) {
+    typename env_t::cgbn_t t, d;
+    uint32_t               np0=-cgbn::ubinary_inverse(low);
+    uint32_t               z=env.clz(n);
+    uint32_t               w=env_t::UNPADDED_BITS, sqrs=0;
+
+    while((w & 1)==0) {
+      w=w>>1;
+      sqrs++;
+    }
+
+    // t = 2^k - n:  negate n, and clear the bits above k
+    env.negate(t, n);
+    env.shift_left(t, t, z);
+    env.shift_right(t, t, z);
+
+    // 2^k mod n  ->  R * 2^w mod n
+    uint32_t doublings=z + (env_t::UNPADDED_BITS - env_t::BITS) + w;
+    #pragma nounroll
+    for(uint32_t i=0;i<doublings;i++) {
+      int32_t carry=env.add(d, t, t);
+      if(carry!=0 || env.compare(d, n)>=0)
+        env.sub(t, d, n);
+      else
+        env.set(t, d);
+    }
+
+    // R * 2^w mod n  ->  R^2 mod n
+    #pragma nounroll
+    for(uint32_t i=0;i<sqrs;i++)
+      env.mont_sqr(t, t, n, np0);
+
+    // bn<n and t<R, so the result is less than 2n
+    env.mont_mul(mont, bn, t, n, np0);
+    if(env.compare(mont, n)>=0)
+      env.sub(mont, mont, n);
+    if(env.equals_ui32(n, 1))
+      env.set_ui32(mont, 0);
+    return np0;
+  }
+};
+
+} // namespace cgbn
+
 /* fast division: common divisor / modulus */
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
 __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::bn2mont(cgbn_t &mont, const cgbn_t &bn, const cgbn_t &n) const {
   typedef cgbn::unpadded_t<cgbn_env_t> unpadded;
   typedef cgbn::core_t<unpadded> core;
-  typedef cgbn::core_singleton_t<unpadded, LIMBS> singleton;
   
-  uint32_t num_low[LIMBS], num_high[LIMBS], n_local[LIMBS];
-  uint32_t shift, low;
+  uint32_t low;
 
   low=core::get_ui32(n._limbs);
   
@@ -999,14 +1076,7 @@ __device__ __forceinline__ uint32_t cgbn_env_t<context_t, bits, syncable>::bn2mo
     }
   }
 
-  // for padded values, we use a larger R
-  cgbn::mpzero<LIMBS>(num_low);
-  shift=core::clz(n._limbs);
-  core::rotate_left(n_local, n._limbs, shift);
-  core::rotate_left(num_high, bn._limbs, shift);
-  singleton::rem_wide(mont._limbs, num_low, num_high, n_local, TPI);
-  core::shift_right(mont._limbs, mont._limbs, shift);
-  return -cgbn::ubinary_inverse(low);
+  return cgbn::dispatch_bn2mont_t<cgbn_env_t, (LIMBS<=TPI)>::bn2mont(*this, mont, bn, n, low);
 }
 
 template<class context_t, uint32_t bits, cgbn_syncable_t syncable>
