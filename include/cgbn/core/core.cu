@@ -66,6 +66,8 @@ class core_t {
   static const uint32_t        DLIMBS=(LIMBS+TPI-1)/TPI;
   // the Montgomery routines have a fully unrolled path for even LIMBS, no padding, up to 4096 bits
   static const bool            MONT_UNROLLED=(PADDING==0 && LIMBS%2==0 && TPI*LIMBS<=128);
+  // mont_sqr splits the operand in half, when that is faster than mont_mul(a, a)
+  static const bool            MONT_SQR_SPLIT=(MONT_UNROLLED && LIMBS>=6);
 
   static const dlimbs_algs_t   DLIMBS_ALG=(LIMBS<=TPI/2) ? dlimbs_algs_half : (LIMBS<=TPI) ? dlimbs_algs_full : dlimbs_algs_multi;
   
@@ -304,6 +306,8 @@ class core_t {
   template<bool multiply>
   __device__ __forceinline__ static void     mont_step(uint32_t ra[LIMBS+2], uint32_t ru[LIMBS+1], uint32_t &c, const uint32_t a[LIMBS], const uint32_t t0, const uint32_t t1, const uint32_t n[LIMBS], const uint32_t np0, const uint32_t sync);
   __device__ __forceinline__ static void     mont_normalize(uint32_t r[LIMBS], uint32_t ra[LIMBS], uint32_t r1, const uint32_t n[LIMBS], const uint32_t sync);
+  __device__ __forceinline__ static void     mont_sqr(uint32_t r[LIMBS], const uint32_t a[LIMBS], const uint32_t n[LIMBS], const uint32_t np0);
+  __device__ __forceinline__ static void     mont_sqr_high(uint32_t e[LIMBS], uint32_t &ec, const uint32_t a[LIMBS], const uint32_t sync);
   __device__ __forceinline__ static void     mont_reduce_wide(uint32_t &r, const uint32_t lo, const uint32_t hi, const uint32_t n, const uint32_t np0, const bool zero);
   __device__ __forceinline__ static void     mont_reduce_wide(uint32_t r[LIMBS], const uint32_t lo[LIMBS], const uint32_t hi[LIMBS], const uint32_t n[LIMBS], const uint32_t np0, const bool zero);
 };

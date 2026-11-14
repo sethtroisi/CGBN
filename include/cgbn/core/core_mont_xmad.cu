@@ -25,6 +25,11 @@ IN THE SOFTWARE.
 namespace cgbn {
 
 template<class env>
+__device__ __forceinline__ void core_t<env>::mont_sqr(uint32_t r[LIMBS], const uint32_t a[LIMBS], const uint32_t n[LIMBS], const uint32_t np0) {
+  core_t<env>::mont_mul(r, a, a, n, np0);
+}
+
+template<class env>
 __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const uint32_t a[LIMBS], const uint32_t b[LIMBS], const uint32_t n[LIMBS], const uint32_t np0) {
   uint32_t sync=sync_mask(), group_thread=threadIdx.x & TPI-1;
   uint32_t u1, ru[LIMBS], r1=0, ra[LIMBS], c=0, t, q;

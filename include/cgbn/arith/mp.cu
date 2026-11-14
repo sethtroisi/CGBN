@@ -266,6 +266,80 @@ __device__ __forceinline__ void mpmul(uint32_t lo[limbs], uint32_t hi[limbs], co
   }
 }
 
+/****************************************************************
+ * r = a * b, the full la by lb limb product
+ *
+ * Each row runs two carry chains, over the alternate limbs of a,
+ * so that every madlo / madhi pair can be a single wide multiply.
+ * The chain with a[la-1] goes first, since it sets r[j+la].
+ ****************************************************************/
+template<uint32_t la, uint32_t lb>
+__device__ __forceinline__ void mpmul_full(uint32_t r[la+lb], const uint32_t a[la], const uint32_t b[lb]) {
+  #pragma unroll
+  for(int32_t index=0;index<la+lb;index++)
+    r[index]=0;
+
+  #pragma unroll
+  for(int32_t j=0;j<lb;j++) {
+    chain_t<> chain1;
+    #pragma unroll
+    for(int32_t i=(la-1)%2;i<la;i+=2) {
+      r[i+j]=chain1.madlo(a[i], b[j], r[i+j]);
+      r[i+j+1]=chain1.madhi(a[i], b[j], r[i+j+1]);
+    }
+    if(la>1) {
+      chain_t<> chain2;
+      #pragma unroll
+      for(int32_t i=la%2;i<la-1;i+=2) {
+        r[i+j]=chain2.madlo(a[i], b[j], r[i+j]);
+        r[i+j+1]=chain2.madhi(a[i], b[j], r[i+j+1]);
+      }
+      r[j+la]=chain2.add(r[j+la], 0);
+    }
+  }
+}
+
+/****************************************************************
+ * r = a * a, the full 2*la limb square
+ *
+ * Sums the cross products a[i] * a[j], i<j, with the same two
+ * chains per row as mpmul_full, doubles, and adds the squares.
+ ****************************************************************/
+template<uint32_t la>
+__device__ __forceinline__ void mpsqr_full(uint32_t r[2*la], const uint32_t a[la]) {
+  #pragma unroll
+  for(int32_t index=0;index<2*la;index++)
+    r[index]=0;
+
+  #pragma unroll
+  for(int32_t i=0;i<la-1;i++) {
+    chain_t<> chain1;
+    #pragma unroll
+    for(int32_t j=i+1+(la-i)%2;j<la;j+=2) {
+      r[i+j]=chain1.madlo(a[i], a[j], r[i+j]);
+      r[i+j+1]=chain1.madhi(a[i], a[j], r[i+j+1]);
+    }
+    if(i+2<la) {
+      chain_t<> chain2;
+      #pragma unroll
+      for(int32_t j=i+2-(la-i)%2;j<la-1;j+=2) {
+        r[i+j]=chain2.madlo(a[i], a[j], r[i+j]);
+        r[i+j+1]=chain2.madhi(a[i], a[j], r[i+j+1]);
+      }
+      r[i+la]=chain2.add(r[i+la], 0);
+    }
+  }
+
+  mpleft<2*la>(r, r, 1);
+
+  chain_t<> chain3;
+  #pragma unroll
+  for(int32_t i=0;i<la;i++) {
+    r[2*i]=chain3.madlo(a[i], a[i], r[2*i]);
+    r[2*i+1]=chain3.madhi(a[i], a[i], r[2*i+1]);
+  }
+}
+
 template<uint32_t limbs, uint32_t max_rotation>
 __device__ __forceinline__ void mprotate_left(uint32_t r[limbs], const uint32_t a[limbs], const uint32_t numlimbs) {
   #pragma unroll

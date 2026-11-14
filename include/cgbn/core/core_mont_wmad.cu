@@ -375,6 +375,221 @@ __device__ __forceinline__ void core_t<env>::mont_mul(uint32_t r[LIMBS], const u
 }
 #endif
 
+/****************************************************************************************************
+ * Squares the high half of a, hi = a / 2^(BITS/2), for mont_sqr.  On return, each thread holds its
+ * LIMBS words of hi^2 in e, and a small carry into the thread above in ec (not yet resolved).
+ *
+ * hi is spread over all TPI threads, as blocks D[0], ..., D[TPI-1] of M=LIMBS/2 words.  Then
+ *
+ *    hi^2 = sum D[g]^2 * B^(2g)  +  2 * sum_{i<j} D[i] * D[j] * B^(i+j),      B=2^(32*M)
+ *
+ * and thread g needs the products with i+j=2g (at word 0) and with i+j=2g+1 (at word M; their high
+ * half goes to thread g+1).  Let H=TPI/2.  Threads t and t+H share the work for their four sums:
+ * for each parity, there are 2*(TPI/4) products (odd) or 2*(TPI/4)-1 products (even) between them.
+ * Each of the two threads computes TPI/4 products per parity, and for even sums the middle product
+ * is split, with thread t taking the low part of D[j] and thread t+H the high part.  A thread first
+ * computes the products for its own sum, then the ones for its partner, which are exchanged at the
+ * end.  count is the number of rounds that are for the thread's own sum.
+ ****************************************************************************************************/
+template<class env>
+__device__ __forceinline__ void core_t<env>::mont_sqr_high(uint32_t e[LIMBS], uint32_t &ec, const uint32_t a[LIMBS], const uint32_t sync) {
+  const int32_t M=(LIMBS+1)/2, ML=M/2, MH=M-ML, H=TPI/2, ROUNDS=TPI/4;      // LIMBS is even, so M=LIMBS/2
+  uint32_t      group_thread=threadIdx.x & TPI-1, t=group_thread & H-1;
+  bool          upper=group_thread>=H;
+  uint32_t      d[M], x[M], y[M], yh[MH], p[2*M], acc[2*M], own[2*M], ph[M+MH];
+  uint32_t      lo, hi, count, i, j, cacc, cown;
+
+  // block D[g] is the low or high half of thread H+g/2
+  #pragma unroll
+  for(int32_t index=0;index<M;index++) {
+    lo=__shfl_sync(sync, a[index], H+group_thread/2, TPI);
+    hi=__shfl_sync(sync, a[index+M], H+group_thread/2, TPI);
+    d[index]=(group_thread & 1)==0 ? lo : hi;
+  }
+
+  #pragma unroll
+  for(int32_t parity=1;parity>=0;parity--) {
+    if(upper)
+      count=H-1-t;
+    else
+      count=t+parity;
+    count=umin(count, ROUNDS);
+
+    mpzero<LIMBS>(own);
+    cown=0;
+    #pragma unroll
+    for(int32_t round=0;round<=ROUNDS;round++) {
+      // after its own products, a thread sets them aside, and starts on the ones for its partner
+      if(round>0) {
+        #pragma unroll
+        for(int32_t index=0;index<LIMBS;index++) {
+          own[index]=(count==round) ? acc[index] : own[index];
+          acc[index]=(count==round) ? 0 : acc[index];
+        }
+        cown=(count==round) ? cacc : cown;
+        cacc=(count==round) ? 0 : cacc;
+      }
+      if(round<ROUNDS) {
+        // the next pair with i<j, and i+j=2*t+parity (i small) or i+j=2*(t+H)+parity (i large)
+        if(upper)
+          i=H-2+parity-round;
+        else
+          i=round;
+        if(i+1-parity<=t)
+          j=2*t+parity-i;
+        else {
+          i=t+1+i;
+          j=2*t+parity+TPI-i;
+        }
+
+        #pragma unroll
+        for(int32_t index=0;index<M;index++) {
+          x[index]=__shfl_sync(sync, d[index], i, TPI);
+          y[index]=__shfl_sync(sync, d[index], j, TPI);
+        }
+
+        if(parity==1 || round<ROUNDS-1)
+          mpmul_full<M, M>(p, x, y);
+        else {
+          // split product:  x times the low ML words of y, or x times the high MH words (at word ML)
+          #pragma unroll
+          for(int32_t index=0;index<MH;index++) {
+            lo=(index<ML) ? y[index] : 0;
+            yh[index]=upper ? y[index+ML] : lo;
+          }
+          mpmul_full<M, MH>(ph, x, yh);
+          #pragma unroll
+          for(int32_t index=0;index<LIMBS;index++) {
+            lo=(index<M+MH) ? ph[index] : 0;
+            hi=(index>=ML) ? ph[index-ML] : 0;
+            p[index]=upper ? hi : lo;
+          }
+        }
+
+        if(round==0) {
+          mpset<LIMBS>(acc, p);
+          cacc=0;
+        }
+        else
+          cacc+=mpadd<LIMBS>(acc, acc, p);
+    
+      }
+    }
+
+    // exchange the products for the partner thread
+    #pragma unroll
+    for(int32_t index=0;index<LIMBS;index++)
+      acc[index]=__shfl_xor_sync(sync, acc[index], H, TPI);
+    cacc=__shfl_xor_sync(sync, cacc, H, TPI);
+    cown+=cacc+mpadd<LIMBS>(own, own, acc);
+
+    if(parity==1) {
+      // odd sums start at word M:  the low half stays, the high half and carry go to the thread above
+      #pragma unroll
+      for(int32_t index=0;index<M;index++) {
+        hi=__shfl_up_sync(sync, own[index+M], 1, TPI);
+        e[index]=(group_thread==0) ? 0 : hi;
+      }
+      hi=__shfl_up_sync(sync, cown, 1, TPI);
+      hi=(group_thread==0) ? 0 : hi;
+
+      chain_t<> chain;
+      e[M]=chain.add(own[0], hi);
+      #pragma unroll
+      for(int32_t index=1;index<M;index++)
+        e[index+M]=chain.add(own[index], 0);
+      ec=chain.add(0, 0);
+    }
+    else
+      ec+=cown+mpadd<LIMBS>(e, e, own);
+  }
+
+  // double the cross products, then add D[g]^2
+  ec=(ec<<1) | (e[LIMBS-1]>>31);
+  mpleft<LIMBS>(e, e, 1);
+  mpsqr_full<M>(p, d);
+  ec+=mpadd<LIMBS>(e, e, p);
+}
+
+/****************************************************************************************************
+ * Montgomery squaring.  Split a = lo + hi * B, where B=2^(BITS/2), so that lo is on the low TPI/2
+ * threads and hi on the high ones.  Then
+ *
+ *    a^2 = lo * (lo + 2 * hi * B) + hi^2 * R
+ *
+ * The first term takes TPI/2 threads worth of multiply steps (rather than TPI) with v=lo+2*hi*B as
+ * the multiplicand, followed by reduction steps.  The second term has weight R, so hi^2 is added
+ * directly to the reduced result.  Since v is taken mod R, there is one more term, top*lo*R, where
+ * top is the bit that was shifted out of v.
+ ****************************************************************************************************/
+template<class env>
+__device__ __forceinline__ void core_t<env>::mont_sqr(uint32_t r[LIMBS], const uint32_t a[LIMBS], const uint32_t n[LIMBS], const uint32_t np0) {
+  uint32_t sync=warp_sync_mask(), group_thread=threadIdx.x & TPI-1;
+  uint32_t t0, t1, r1, top, shift, v[LIMBS], e[LIMBS], ra[LIMBS+2], ru[LIMBS+1], c=0;
+
+  if(!MONT_SQR_SPLIT) {
+    mont_mul(r, a, a, n, np0);
+    return;
+  }
+
+  mont_sqr_high(e, r1, a, sync);
+
+  // v = lo + 2 * hi * B:  shift the high threads left by one bit
+  top=__shfl_sync(sync, a[LIMBS-1], TPI-1, TPI)>>31;
+  t0=__shfl_up_sync(sync, a[LIMBS-1], 1, TPI);
+  if(group_thread<=TPI/2)
+    t0=0;
+  shift=(group_thread>=TPI/2) ? 1 : 0;
+  v[0]=uleft_wrap(t0, a[0], shift);
+  #pragma unroll
+  for(int32_t index=1;index<LIMBS;index++)
+    v[index]=uleft_wrap(a[index-1], a[index], shift);
+
+  #pragma unroll
+  for(int32_t index=0;index<=LIMBS;index++) {
+    ra[index]=0;
+    ru[index]=0;
+  }
+  ra[LIMBS+1]=0;
+
+  // lo * v:  the multiplier comes from the low threads, where v is the same as a
+  #pragma unroll
+  for(int32_t thread=0;thread<TPI/2;thread++) {
+    #pragma unroll
+    for(int32_t word=0;word<LIMBS;word+=2) {
+      t0=__shfl_sync(sync, v[word], thread, TPI);
+      t1=__shfl_sync(sync, v[word+1], thread, TPI);
+      mont_step<true>(ra, ru, c, v, t0, t1, n, np0, sync);
+    }
+  }
+  #pragma unroll
+  for(int32_t thread=TPI/2;thread<TPI;thread++) {
+    #pragma unroll
+    for(int32_t word=0;word<LIMBS;word+=2)
+      mont_step<false>(ra, ru, c, v, 0, 0, n, np0, sync);
+  }
+
+  // add in hi^2
+  chain_t<LIMBS+1> chain1;
+  ra[0]=chain1.add(ra[0], c);
+  #pragma unroll
+  for(int32_t index=1;index<LIMBS;index++)
+    ra[index]=chain1.add(ra[index], ru[index-1]);
+  t0=chain1.add(ra[LIMBS], ru[LIMBS-1]);
+  r1+=t0+mpadd<LIMBS>(ra, ra, e);
+
+  // add in top * lo
+  if(__any_sync(sync, top!=0)) {
+    top=(group_thread<TPI/2) ? -top : 0;
+    #pragma unroll
+    for(int32_t index=0;index<LIMBS;index++)
+      v[index]=v[index] & top;
+    r1+=mpadd<LIMBS>(ra, ra, v);
+  }
+
+  mont_normalize(r, ra, r1, n, sync);
+}
+
 template<class env>
 __device__ __forceinline__ void core_t<env>::mont_reduce_wide(uint32_t r[LIMBS], const uint32_t lo[LIMBS], const uint32_t hi[LIMBS], const uint32_t n[LIMBS], const uint32_t np0, const bool zero) {
   uint32_t sync=sync_mask(), group_thread=threadIdx.x & TPI-1;
