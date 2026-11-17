@@ -25,8 +25,8 @@ IN THE SOFTWARE.
 namespace cgbn {
 
 /****************************************************************
- * The ballots are taken across the warp (warp_sync_mask), and
- * then masked down to the instance (sync_mask).  A sync mask
+ * The ballots are taken across the warp (instance_ballot_sync),
+ * and then masked down to the instance (sync_mask).  A sync mask
  * that is the same on every thread of the warp is much cheaper
  * than one mask per instance.
  ****************************************************************/
@@ -42,11 +42,11 @@ class dispatch_resolver_t<core, tpi, 0> {
    * returns 0 otherwise
    ****************************************************************/
   __device__ __forceinline__ static int32_t fast_negate(uint32_t &x) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
     uint32_t lane=1<<warp_thread;
     uint32_t p, c;
   
-    p=__ballot_sync(warp, x==0 && group_thread!=tpi-1) & sync;
+    p=core::instance_ballot_sync(sync, x==0 && group_thread!=tpi-1);
     c=(p+GROUP_ONES^p)&lane;
     add_cc(c, 0xFFFFFFFF);
     x=subc_cc(0, x);
@@ -55,12 +55,12 @@ class dispatch_resolver_t<core, tpi, 0> {
   }
   
   __device__ __forceinline__ static int32_t fast_negate(uint32_t x[LIMBS]) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
     uint32_t lane=1<<warp_thread;
     uint32_t lor, p, c;
   
     lor=mplor<LIMBS>(x);
-    p=__ballot_sync(warp, lor==0 && group_thread!=tpi-1) & sync;
+    p=core::instance_ballot_sync(sync, lor==0 && group_thread!=tpi-1);
     c=(p+GROUP_ONES^p)&lane;
     
     chain_t<> chain;
@@ -78,13 +78,13 @@ class dispatch_resolver_t<core, tpi, 0> {
    * returns 0 otherwise
    ****************************************************************/
   __device__ __forceinline__ static int32_t fast_propagate_add(const uint32_t carry, uint32_t &x) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<warp_thread;
     uint32_t g, p, c; 
     uint64_t sum;
   
-    g=__ballot_sync(warp, carry==1) & sync;
-    p=__ballot_sync(warp, x==0xFFFFFFFF && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, carry==1);
+    p=core::instance_ballot_sync(sync, x==0xFFFFFFFF && group_thread!=0);
   
     // wrap the carry around  
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);
@@ -96,14 +96,14 @@ class dispatch_resolver_t<core, tpi, 0> {
   }
   
   __device__ __forceinline__ static int32_t fast_propagate_add(const uint32_t carry, uint32_t x[LIMBS]) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<warp_thread;
     uint32_t land, g, p, c; 
     uint64_t sum;
     
     land=mpland<LIMBS>(x);
-    g=__ballot_sync(warp, carry==1) & sync;
-    p=__ballot_sync(warp, land==0xFFFFFFFF && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, carry==1);
+    p=core::instance_ballot_sync(sync, land==0xFFFFFFFF && group_thread!=0);
 
     // wrap the carry around  
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);
@@ -123,13 +123,13 @@ class dispatch_resolver_t<core, tpi, 0> {
    * returns 0 otherwise
    ****************************************************************/
   __device__ __forceinline__ static int32_t fast_propagate_sub(const uint32_t carry, uint32_t &x) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<(threadIdx.x & warpSize-1);
     uint32_t g, p, c; 
     uint64_t sum;
   
-    g=__ballot_sync(warp, carry==0xFFFFFFFF) & sync;
-    p=__ballot_sync(warp, x==0 && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, carry==0xFFFFFFFF);
+    p=core::instance_ballot_sync(sync, x==0 && group_thread!=0);
   
     // wrap the carry around  
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);
@@ -141,14 +141,14 @@ class dispatch_resolver_t<core, tpi, 0> {
   }
   
   __device__ __forceinline__ static int32_t fast_propagate_sub(const uint32_t carry, uint32_t x[LIMBS]) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<(threadIdx.x & warpSize-1);
     uint32_t lor, g, p, c; 
     uint64_t sum;
     
     lor=mplor<LIMBS>(x);
-    g=__ballot_sync(warp, carry==0xFFFFFFFF) & sync;
-    p=__ballot_sync(warp, lor==0 && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, carry==0xFFFFFFFF);
+    p=core::instance_ballot_sync(sync, lor==0 && group_thread!=0);
 
     // wrap the carry around  
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);
@@ -168,7 +168,7 @@ class dispatch_resolver_t<core, tpi, 0> {
    * returns the high word 
    ****************************************************************/
   __device__ __forceinline__ static int32_t resolve_add(const int32_t carry, uint32_t &x) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<(threadIdx.x & warpSize-1);
     uint32_t g, p, c;
     uint64_t sum;
@@ -178,8 +178,8 @@ class dispatch_resolver_t<core, tpi, 0> {
     x=add_cc(x, c);
     c=addc(0, 0);
 
-    g=__ballot_sync(warp, c==1) & sync;
-    p=__ballot_sync(warp, x==0xFFFFFFFF && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, c==1);
+    p=core::instance_ballot_sync(sync, x==0xFFFFFFFF && group_thread!=0);
   
     // wrap the carry around  
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);
@@ -191,7 +191,7 @@ class dispatch_resolver_t<core, tpi, 0> {
   }
 
   __device__ __forceinline__ static int32_t resolve_add(const int32_t carry, uint32_t x[LIMBS]) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<(threadIdx.x & warpSize-1);
     uint32_t g, p, c, land;
     uint64_t sum;
@@ -205,8 +205,8 @@ class dispatch_resolver_t<core, tpi, 0> {
     c=addc(0, 0);
   
     land=mpland<LIMBS>(x);
-    g=__ballot_sync(warp, c==1) & sync;
-    p=__ballot_sync(warp, land==0xFFFFFFFF && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, c==1);
+    p=core::instance_ballot_sync(sync, land==0xFFFFFFFF && group_thread!=0);
   
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);
     c=lane&(p^sum);
@@ -225,7 +225,7 @@ class dispatch_resolver_t<core, tpi, 0> {
    * returns the high word 
    ****************************************************************/
   __device__ __forceinline__ static int32_t resolve_sub(const int32_t carry, uint32_t &x) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<(threadIdx.x & warpSize-1);
     uint32_t g, p;
     int32_t  c;
@@ -236,8 +236,8 @@ class dispatch_resolver_t<core, tpi, 0> {
     x=add_cc(x, c);
     c=addc(0, c>>31);
 
-    g=__ballot_sync(warp, c==0xFFFFFFFF) & sync;
-    p=__ballot_sync(warp, x==0 && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, c==0xFFFFFFFF);
+    p=core::instance_ballot_sync(sync, x==0 && group_thread!=0);
   
     // wrap the carry around  
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);
@@ -249,7 +249,7 @@ class dispatch_resolver_t<core, tpi, 0> {
   }
   
   __device__ __forceinline__ static int32_t resolve_sub(const int32_t carry, uint32_t x[LIMBS]) {
-    uint32_t sync=core::sync_mask(), warp=core::warp_sync_mask(), group_thread=threadIdx.x & tpi-1;
+    uint32_t sync=core::sync_mask(), group_thread=threadIdx.x & tpi-1;
     uint32_t lane=(group_thread==0) ? 0 : 1<<(threadIdx.x & warpSize-1);
     uint32_t g, p, lor;
     int32_t  c;
@@ -265,8 +265,8 @@ class dispatch_resolver_t<core, tpi, 0> {
     c=addc(0, c);
 
     lor=mplor<LIMBS>(x);
-    g=__ballot_sync(warp, c==0xFFFFFFFF) & sync;
-    p=__ballot_sync(warp, lor==0 && group_thread!=0) & sync;
+    g=core::instance_ballot_sync(sync, c==0xFFFFFFFF);
+    p=core::instance_ballot_sync(sync, lor==0 && group_thread!=0);
   
     // wrap the carry around  
     sum=make_wide(g, g) + make_wide(g, g) + make_wide(p, p);

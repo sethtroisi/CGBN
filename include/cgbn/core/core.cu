@@ -185,6 +185,17 @@ class core_t {
     // which lets the compiler emit the shuffles inline, and it can be used for warp wide votes.
     return __activemask();
   }
+
+  __device__ __forceinline__ static uint32_t instance_ballot_sync(uint32_t sync, int predicate) {
+    uint32_t warp=warp_sync_mask();
+
+    assert((warp & sync)==sync);
+    return __ballot_sync(warp, predicate) & sync;
+  }
+
+  __device__ __forceinline__ static uint32_t instance_ballot_sync(int predicate) {
+    return instance_ballot_sync(sync_mask(), predicate);
+  }
   
   
   /* BN ROUTINES */
